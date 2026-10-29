@@ -59,8 +59,8 @@ var beforeRefs = func() {}
 // fileReader is what a regular file is chunked from (test hook: fail a read midway).
 var fileReader = func(f *os.File) io.Reader { return f }
 
-// beforeOpen runs before a regular file is opened (test hook: remove it there).
-var beforeOpen = func(path string) {}
+// beforeRead runs before a regular file is opened or a symlink read (test hook: remove it there).
+var beforeRead = func(path string) {}
 
 // Run backs up cfg's paths into a new snapshot, logs backup-completed or backup-failed
 // (ADR 0009) and returns the snapshot's name.
@@ -107,7 +107,7 @@ type run struct {
 // that silently lacks it (or holds its chunks without its entry) would not restore as saved.
 type skipError struct{ error }
 
-// vanished turns an lstat or open error of a path removed since its directory was listed
+// vanished turns an lstat, open or readlink error of a path removed since its directory was listed
 // (ENOENT, or ENOTDIR from a parent replaced meanwhile) into a skipError: nothing of it was
 // read yet, so the snapshot lacks it entirely, as if the run had started later.
 func vanished[T any](v T, err error) (T, error) {
@@ -237,7 +237,8 @@ func (r *run) save(ctx context.Context, path string, info fs.FileInfo) error {
 	case fs.ModeSymlink:
 		e.Type = backupv1.Entry_TYPE_SYMLINK
 		setMeta(e, info)
-		target, err := os.Readlink(path)
+		beforeRead(path)
+		target, err := vanished(os.Readlink(path))
 		if err != nil {
 			return err
 		}
@@ -266,7 +267,7 @@ func setMeta(e *backupv1.Entry, info fs.FileInfo) {
 // file chunks a regular file as read; a size or mtime that moved meanwhile is file-changed.
 func (r *run) file(ctx context.Context, path string, e *backupv1.Entry) error {
 	// O_NOFOLLOW, O_NONBLOCK: a file swapped for a symlink or a FIFO since the walk saw it.
-	beforeOpen(path)
+	beforeRead(path)
 	f, err := vanished(os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0))
 	if err != nil {
 		return err // *PathError: names the path

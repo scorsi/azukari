@@ -453,7 +453,7 @@ func TestVanished(t *testing.T) {
 	statGone, openGone := filepath.Join(e.tree, "gone-stat"), filepath.Join(e.tree, "gone-open")
 	write(t, statGone, []byte("x"))
 	write(t, openGone, []byte("y"))
-	beforeOpen = func(path string) {
+	beforeRead = func(path string) {
 		switch path {
 		case filepath.Join(e.tree, "big"): // listed already, lstat comes later
 			os.Remove(statGone)
@@ -461,7 +461,7 @@ func TestVanished(t *testing.T) {
 			os.Remove(openGone)
 		}
 	}
-	t.Cleanup(func() { beforeOpen = func(string) {} })
+	t.Cleanup(func() { beforeRead = func(string) {} })
 	before, err := os.Stat(e.tree)
 	if err != nil {
 		t.Fatal(err)
@@ -491,4 +491,37 @@ func TestRootTooLarge(t *testing.T) {
 	maxRoot = 64
 	t.Cleanup(func() { maxRoot = m })
 	e.runFails(t, "over the 64 a restore reads")
+}
+
+// A symlink removed after its directory was listed, before its readlink, is file-skipped.
+func TestVanishedSymlink(t *testing.T) {
+	e := start(t)
+	e.makeTree(t)
+	link := filepath.Join(e.tree, "gone-link")
+	if err := os.Symlink("text.txt", link); err != nil {
+		t.Fatal(err)
+	}
+	beforeRead = func(path string) {
+		if path == link {
+			os.Remove(link)
+		}
+	}
+	t.Cleanup(func() { beforeRead = func(string) {} })
+	before, err := os.Stat(e.tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := e.run(t)
+	// The removal moved the directory's mtime after it was saved.
+	if err := os.Chtimes(e.tree, before.ModTime(), before.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	if e.logs.count(`"file-skipped","path":"`+link+`"`) != 1 {
+		t.Errorf("%s not logged as file-skipped\n%s", link, e.logs.b.String())
+	}
+	target := t.TempDir()
+	if err := e.restore(name, target, false); err != nil {
+		t.Fatal(err)
+	}
+	sameTree(t, e.tree, target)
 }
