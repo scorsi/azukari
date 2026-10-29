@@ -1,6 +1,6 @@
 # ADR 0006 — Backup format
 
-Status: Accepted — 2026-10-29
+Status: Accepted — 2026-10-29. Key file name superseded by ADR 0011 (`data_key_file`).
 
 ## Context
 

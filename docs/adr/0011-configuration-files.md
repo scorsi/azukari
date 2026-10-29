@@ -1,6 +1,6 @@
 # ADR 0011 — Configuration of the TLS files and of azukari-backup
 
-Status: Accepted — 2026-10-29. Supersedes the file key names of ADR 0005 (Decision, Files).
+Status: Accepted — 2026-10-29. Supersedes the file key names of ADR 0005 (Decision, Files) and the name `key_file` of ADR 0006 (Decision, Key).
 
 ## Context
 
@@ -12,12 +12,12 @@ store, the bucket, the paths) is fixed by no ADR.
 ## Options considered
 
 - **Rename the data key** (`data_key_file`): ADR 0006 changes, ADR 0005 stays.
-- **Put the identity files in a `[tls]` table on both sides**: each file key says what it
-  belongs to; `key_file` at the top level of `azukari-backup` stays the data key of ADR 0006.
+- **Put the identity files in a `[tls]` table on both sides** and rename the data key: each file key says what it
+  belongs to.
 
 ## Decision
 
-`[tls]` table on both sides (owner, 2026-10-29). Unknown keys stay refused.
+`[tls]` table on both sides, and the data key of ADR 0006 is named `data_key_file` so no two keys share a name (owner, 2026-10-29). Unknown keys stay refused.
 
 `azukari-server`:
 
@@ -34,7 +34,7 @@ bundle_file = "/absolute/bundle.pem"
 ```toml
 server = "https://store.example.org:8443"  # https only, host and port, no path
 bucket = "backup"                           # [a-z0-9-] (ADR 0004)
-key_file = "/absolute/data.key"             # the node's data key (ADR 0006)
+data_key_file = "/absolute/data.key"        # the node's data key (ADR 0006)
 paths = ["/var/lib/a", "/var/lib/b"]        # absolute, not empty, no duplicate, none inside another
 
 [tls]
