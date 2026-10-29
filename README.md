@@ -1,7 +1,7 @@
 # azukari (預かり)
 
 > Store for the homelab's data, with typed buckets, starting with backups: nodes push data
-> they encrypted themselves, the store only adds, keeps, prunes and replicates. Rust.
+> they encrypted themselves, the store only adds, keeps, prunes and replicates. Go.
 
 *預かり (azukari): what is kept in custody for someone, and given back only to them.*
 
@@ -24,5 +24,5 @@ a general-purpose client, a web UI.
 
 ## Conventions
 
-Nix flake, NixOS module, `nixosTest`. Docs in English. Public repository: no host names,
+Go. Nix flake, NixOS module, `nixosTest`. Docs in English. Public repository: no host names,
 domains or addresses of any deployment.
