@@ -78,8 +78,9 @@ in
       type = types.str;
       default = "/persist/backups";
       description = ''
-        The base of the exports' directories (ADR 0021), created `0750 root:azukari-backup` when
-        missing. An existing base keeps its mode: the group `azukari-backup` must be able to enter it.
+        The base of the exports' directories (ADR 0021), created `0711 root:root` when missing.
+        An existing base keeps its mode: it must be traversable by everyone (`o+x`), since each
+        export's user and `azukari-backup` reach their own directory through it.
       '';
     };
 
@@ -186,7 +187,7 @@ in
 
     # `z` also fixes an existing directory. Setgid: exported files get the export's group.
     systemd.tmpfiles.rules =
-      lib.optional (cfg.exports != { }) "d ${cfg.exportsDir} 0750 root azukari-backup -"
+      lib.optional (cfg.exports != { }) "d ${cfg.exportsDir} 0711 root root -"
       ++ lib.concatLists (
         lib.mapAttrsToList (name: e: [
           "d ${exportDir name} 2750 ${e.user} ${exportGroup name} -"

@@ -251,7 +251,7 @@
                 && lib.elem "azukari-export-db.service" exUnit.after
                 && backup.systemd.services.azukari-backup.requires == [ ];
               assert lib.all (l: lib.elem l withExport.systemd.tmpfiles.rules) [
-                "d /persist/backups 0750 root azukari-backup -"
+                "d /persist/backups 0711 root root -"
                 "d /persist/backups/db 2750 db azukari-export-db -"
                 "z /persist/backups/db 2750 db azukari-export-db -"
               ];

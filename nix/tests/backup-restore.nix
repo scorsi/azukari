@@ -1,11 +1,12 @@
 # nixosTest `backup-restore` (ADR 0010, v0 acceptance, milestone M2): node-a backs up a varied
 # tree exported through `services.azukari-backup.exports` (with a file hard-linked from the
-# service's data outside the export, ADR 0022, 0023), the run as `azukari-backup` with no
-# capability (ADR 0020, 0021); a second, fresh VM holding only node-a's data key and SVID restores
-# it as root, and the trees compare equal (`diff -r` and a stat listing). One file changes, the
-# second backup adds only a few chunks, the first snapshot still restores the original tree;
-# `snapshots` and `restore --verify` run unprivileged; a file the group cannot read fails the run
-# (ADR 0005, 0006, 0011).
+# service's data outside the export, ADR 0022, 0023) and a second export run as the non-root
+# user alice, who must traverse the exports base to reach her directory; the run as
+# `azukari-backup` with no capability (ADR 0020, 0021); a second, fresh VM holding only node-a's
+# data key and SVID restores it as root, and the trees compare equal (`diff -r` and a stat
+# listing). One file changes, the second backup adds only a few chunks, the first snapshot still
+# restores the original tree; `snapshots` and `restore --verify` run unprivileged; a file the
+# group cannot read fails the run (ADR 0005, 0006, 0011).
 args@{
   self,
   pkgs,
@@ -108,6 +109,12 @@ pkgs.testers.runNixOSTest {
         group = "alice";
       };
       users.groups.alice.gid = 1500;
+      # A service's export as its own non-root user: it reaches its directory only through the
+      # exports base, which must be traversable (0711). Not on the restorer, which has no alice.
+      services.azukari-backup.exports.alice = {
+        user = "alice";
+        command = ''echo hello-from-alice > "$EXPORT_DIR/hello"'';
+      };
     };
     # Fresh: the same key, SVID and file, nothing else of node-a (no tree, no users).
     restorer = nodeA;
@@ -219,6 +226,9 @@ pkgs.testers.runNixOSTest {
         before = chunks()
         assert before >= 6, f"{before} chunks for a 27 MiB tree (chunks are 4 MiB at most)"
         restore(first[0], "one", "one", orig)
+        # The non-root export wrote through the base, and its file came back.
+        node_a.succeed("test \"$(stat -c '%U %G %a' /persist/backups/alice/hello)\" = 'alice azukari-export-alice 640'")
+        restorer.succeed("test \"$(cat /restore-one/persist/backups/alice/hello)\" = hello-from-alice")
 
     with subtest("one file changes: the second backup adds only a few chunks"):
         node_a.succeed(
