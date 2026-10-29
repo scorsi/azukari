@@ -12,3 +12,4 @@ Decision / Consequences. A decision is changed by a new ADR that supersedes the 
 | [0005](0005-identity-and-rights.md) | Identity and rights |
 | [0006](0006-backup-format.md) | Backup format |
 | [0007](0007-retention.md) | Retention and pruning |
+| [0008](0008-replication.md) | Replication |

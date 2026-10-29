@@ -42,6 +42,7 @@ How an object's hash and size are kept (the `GET` and `list` of ADR 0003 return 
   [[buckets]]
   name = "backup"            # [a-z0-9-], unique
   type = "backup"            # only type in v0
+  class = "<name>"          # replication and other per-class settings (ADR 0008)
   path = "/absolute/dir"     # a directory on one local filesystem
   max_object_bytes = 16777216
   disk_reserve = "20GiB"     # free space kept on that filesystem; below it, 507
