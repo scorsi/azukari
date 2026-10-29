@@ -13,6 +13,16 @@
       url = "github:numtide/treefmt-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    # Test-only: the nixosTests run their validators on the store's logs and metrics (ADR 0009, 0010).
+    nisshi = {
+      url = "git+ssh://git@forgejo.uchi.scorsi.dev:2222/scorsi/nisshi.git";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    masu = {
+      url = "git+ssh://git@forgejo.uchi.scorsi.dev:2222/scorsi/masu.git";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -66,7 +76,7 @@
           # The package's check phase runs `go vet` then `go test` (nix/package.nix). `module-eval`
           # evaluates the module on every system, macOS included; on Linux, `module` builds the file
           # (so `azukari-server check` runs on the module's output) and `module-typo` proves an
-          # unknown key fails that build.
+          # unknown key fails that build, and the nixosTests run (Linux builders).
           checks = {
             inherit azukari;
 
@@ -160,6 +170,11 @@
             module-typo = pkgs.testers.testBuildFailure (moduleConfig {
               services.azukari-server.settings.listne = [ "[::]:8443" ];
             });
+            # nixosTests (nix/tests/, ADR 0010).
+            rights = import ./nix/tests/rights.nix {
+              inherit self pkgs;
+              inherit (inputs) nisshi masu;
+            };
           };
 
           devShells.default = pkgs.mkShellNoCC {
