@@ -15,3 +15,4 @@ Decision / Consequences. A decision is changed by a new ADR that supersedes the 
 | [0008](0008-replication.md) | Replication |
 | [0009](0009-observability.md) | Observability |
 | [0010](0010-testing.md) | Testing |
+| [0011](0011-configuration-files.md) | Configuration of the TLS files and of azukari-backup |
