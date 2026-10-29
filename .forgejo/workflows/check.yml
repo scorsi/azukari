@@ -1,0 +1,40 @@
+# Runs on the host runners (sekkeizu's forgejo-runner.nix), one job per Nix system. Each Linux job
+# builds its system's checks one at a time (the nixosTests on x86_64 only); macOS runs `nix flake check`
+# (unit tests, vet, module evaluation). The private inputs nisshi and masu (git+ssh) are fetched with
+# the runners' read-only CI deploy key.
+on:
+  push:
+  workflow_dispatch:
+
+# The runners have nu on their PATH (forgejo-runner.nix).
+defaults:
+  run:
+    shell: nu --no-config-file {0}
+
+jobs:
+  x86_64-linux:
+    runs-on: x86_64-linux
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+      - run: nix fmt -- --ci
+      - run: |
+          let system = (nix eval --impure --raw --expr 'builtins.currentSystem')
+          let checks = (nix eval --impure --json .#checks --apply 'c: builtins.attrNames c.${builtins.currentSystem}' | from json)
+          for c in $checks { nix build -L --no-link $".#checks.($system).($c)" }
+
+  # The aarch64 runner is a VM with nested KVM, too slow for the nixosTests: they run on x86_64
+  # only. A nixosTest is a check carrying a `driver`.
+  aarch64-linux:
+    runs-on: aarch64-linux
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+      - run: |
+          let system = (nix eval --impure --raw --expr 'builtins.currentSystem')
+          let checks = (nix eval --impure --json .#checks --apply 'c: let s = c.${builtins.currentSystem}; in builtins.filter (n: !(s.${n} ? driver)) (builtins.attrNames s)' | from json)
+          for c in $checks { nix build -L --no-link $".#checks.($system).($c)" }
+
+  macos:
+    runs-on: aarch64-darwin
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+      - run: nix flake check -L
