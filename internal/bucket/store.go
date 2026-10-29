@@ -49,6 +49,7 @@ type Bucket struct {
 	maxObject int64
 	reserve   int64
 	freeSpace func(dir string) (int64, error)
+	space     *account // shared by the buckets on the same filesystem
 	now       func() time.Time
 	failed    atomic.Pointer[error]
 	locks     sync.Map // namespace -> *sync.Mutex
@@ -68,10 +69,59 @@ func (b *Bucket) LockNamespace(namespace string) (unlock func()) {
 	return mu.Unlock
 }
 
+// account counts the bytes reserved by the uploads in flight on one filesystem, so that
+// concurrent uploads cannot together eat into a bucket's disk_reserve.
+type account struct {
+	mu       sync.Mutex
+	reserved int64
+}
+
+var accounts sync.Map // filesystem device id -> *account
+
+// accountFor returns the account of path's filesystem.
+func accountFor(path string) *account {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return new(account) // Open just succeeded on path; a private account still bounds this bucket
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return new(account)
+	}
+	a, _ := accounts.LoadOrStore(uint64(st.Dev), new(account))
+	return a.(*account)
+}
+
+// admit reserves need bytes on the bucket's filesystem if its free space, less the bytes
+// already reserved there, keeps the bucket's reserve; the caller defers release.
+// shortcut: bytes an upload in flight already wrote count twice (in statfs and in reserved), so
+// admission is conservative by up to the in-flight total; track written bytes if that bites.
+func (b *Bucket) admit(need int64) (release func(), err error) {
+	a := b.space
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	// statfs under the lock: a free value read before another upload released would be stale.
+	free, err := b.freeSpace(filepath.Join(b.path, "tmp"))
+	if err != nil {
+		return nil, b.fail(fmt.Errorf("statfs: %w", err))
+	}
+	if free-a.reserved-need < b.reserve {
+		return nil, fmt.Errorf("%w: %d bytes free, %d in flight, %d announced, reserve %d",
+			ErrDiskReserve, free, a.reserved, need, b.reserve)
+	}
+	a.reserved += need
+	return func() {
+		a.mu.Lock()
+		a.reserved -= need
+		a.mu.Unlock()
+	}, nil
+}
+
 // New returns the bucket at path, opened by Open, with its max_object_bytes and disk_reserve.
 func New(path string, maxObjectBytes, diskReserve int64) *Bucket {
 	return &Bucket{
 		path: path, maxObject: maxObjectBytes, reserve: diskReserve, freeSpace: FreeSpace, now: time.Now,
+		space: accountFor(path),
 		write: (*os.File).Write, syncFile: (*os.File).Sync, link: os.Link, syncDir: syncDir,
 	}
 }
@@ -162,16 +212,13 @@ func (b *Bucket) Put(k string, size int64, sum [32]byte, body io.Reader) (create
 	if size < 0 || size > b.maxObject {
 		return false, fmt.Errorf("%w: %d bytes, max %d", ErrTooLarge, size, b.maxObject)
 	}
-	tmpDir := filepath.Join(b.path, "tmp")
-	free, err := b.freeSpace(tmpDir)
+	release, err := b.admit(size + HeaderSize)
 	if err != nil {
-		return false, b.fail(fmt.Errorf("statfs: %w", err))
+		return false, err
 	}
-	if free-size-HeaderSize < b.reserve {
-		return false, fmt.Errorf("%w: %d bytes free, %d announced, reserve %d", ErrDiskReserve, free, size, b.reserve)
-	}
+	defer release() // runs last: after the temporary file is removed
 
-	f, err := os.CreateTemp(tmpDir, "put-")
+	f, err := os.CreateTemp(filepath.Join(b.path, "tmp"), "put-")
 	if err != nil {
 		return false, b.fail(err)
 	}

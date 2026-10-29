@@ -185,6 +185,72 @@ func TestPutDiskReserve(t *testing.T) {
 	}
 }
 
+// gated is a body that blocks its first read until gate closes, then reads r.
+type gated struct {
+	gate <-chan struct{}
+	r    io.Reader
+}
+
+func (g gated) Read(p []byte) (int, error) { <-g.gate; return g.r.Read(p) }
+
+// Concurrent uploads on two buckets of one filesystem share its in-flight account: when only
+// one fits above the reserve, the others get ErrDiskReserve before writing anything.
+func TestPutDiskReserveConcurrent(t *testing.T) {
+	mp := t.TempDir()
+	body := strings.Repeat("x", 100)
+	free := int64(1000 + HeaderSize + 100 + HeaderSize + 99) // reserve 1000: room for one upload, not two
+	var bs []*Bucket
+	for _, name := range []string{"one", "two"} { // each keeps its own reserve, both 1000 here
+		path := filepath.Join(mp, name)
+		if s, err := Open(path, mp, mounted); s != Created || err != nil {
+			t.Fatalf("Open = %v, %v", s, err)
+		}
+		b := New(path, 1<<20, 1000)
+		b.freeSpace = func(string) (int64, error) { return free, nil }
+		bs = append(bs, b)
+	}
+	if bs[0].space != bs[1].space {
+		t.Fatal("buckets on one filesystem do not share an account")
+	}
+
+	const n = 8
+	gate := make(chan struct{})
+	errs := make(chan error, n)
+	for i := range n {
+		go func() {
+			_, err := bs[i%2].Put(fmt.Sprintf("n/%d", i), 100, sha256.Sum256([]byte(body)),
+				gated{gate, strings.NewReader(body)})
+			errs <- err
+		}()
+	}
+	for range n - 1 { // the refused ones answer while the winner still waits for its body
+		if err := <-errs; !errors.Is(err, ErrDiskReserve) {
+			t.Fatalf("Put = %v, want ErrDiskReserve", err)
+		}
+	}
+	close(gate)
+	if err := <-errs; err != nil {
+		t.Fatalf("the admitted Put = %v", err)
+	}
+	// The fake statfs ignores the winner's bytes: a failed Put must release its reservation too.
+	cut := make(chan struct{})
+	close(cut)
+	if _, err := bs[0].Put("n/cut", 100, sha256.Sum256([]byte(body)), gated{cut, strings.NewReader("short")}); !errors.Is(err, ErrSizeMismatch) {
+		t.Fatalf("cut Put = %v", err)
+	}
+	if _, err := put(bs[1], "n/after", body); err != nil {
+		t.Fatalf("Put after a failed one = %v, its reservation was not released", err)
+	}
+	if bs[0].space.reserved != 0 {
+		t.Fatalf("reserved = %d after every Put ended", bs[0].space.reserved)
+	}
+	for _, b := range bs {
+		if e, err := os.ReadDir(filepath.Join(b.path, "tmp")); err != nil || len(e) != 0 {
+			t.Fatalf("tmp/ = %v, %v", e, err)
+		}
+	}
+}
+
 func TestUnavailable(t *testing.T) {
 	b := newBucket(t)
 	must(t, os.RemoveAll(filepath.Join(b.path, "tmp"))) // the next write fails
