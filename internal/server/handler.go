@@ -317,6 +317,11 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request, o *outcome, b *buck
 // refuseErr maps the bucket's refusals to ADR 0003's statuses.
 func (s *Server) refuseErr(w http.ResponseWriter, r *http.Request, o *outcome, name string, err error) {
 	switch {
+	case errors.Is(err, bucket.ErrStopped):
+		if errors.Is(err, bucket.ErrBecameUnavailable) {
+			s.log.Error("", "event", "bucket-unavailable", "bucket", name, "err", err.Error())
+		}
+		refuse(w, r, o, http.StatusServiceUnavailable, "stopped", err)
 	case errors.Is(err, bucket.ErrBecameUnavailable):
 		s.log.Error("", "event", "bucket-unavailable", "bucket", name, "err", err.Error())
 		refuse(w, r, o, http.StatusServiceUnavailable, "bucket-unavailable", err)

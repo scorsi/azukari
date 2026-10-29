@@ -36,6 +36,11 @@ var (
 	// ErrBecameUnavailable is returned once, by the call whose write or fsync error made the
 	// bucket unavailable: the caller logs bucket-unavailable then. It also matches ErrUnavailable.
 	ErrBecameUnavailable = fmt.Errorf("%w now", ErrUnavailable)
+	// ErrStopped is returned by a Put whose object may or may not be durable: a directory
+	// fsync failed once it was visible under objects/ (503 stopped, ADR 0003). The bucket is
+	// unavailable from then on; the error also matches ErrBecameUnavailable for the call that
+	// failed it.
+	ErrStopped = errors.New("writer stopped after an uncertain commit")
 )
 
 // Bucket serves the objects of a bucket that Open left Available or Created.
@@ -47,6 +52,11 @@ type Bucket struct {
 	now       func() time.Time
 	failed    atomic.Pointer[error]
 	locks     sync.Map // namespace -> *sync.Mutex
+	// The write path's syscalls, replaced by the fault-injection tests.
+	write    func(f *os.File, p []byte) (int, error)
+	syncFile func(f *os.File) error
+	link     func(oldname, newname string) error
+	syncDir  func(dir string) error
 }
 
 // LockNamespace takes namespace's lock and returns its unlock (ADR 0007): a refs Put holds
@@ -60,7 +70,10 @@ func (b *Bucket) LockNamespace(namespace string) (unlock func()) {
 
 // New returns the bucket at path, opened by Open, with its max_object_bytes and disk_reserve.
 func New(path string, maxObjectBytes, diskReserve int64) *Bucket {
-	return &Bucket{path: path, maxObject: maxObjectBytes, reserve: diskReserve, freeSpace: FreeSpace, now: time.Now}
+	return &Bucket{
+		path: path, maxObject: maxObjectBytes, reserve: diskReserve, freeSpace: FreeSpace, now: time.Now,
+		write: (*os.File).Write, syncFile: (*os.File).Sync, link: os.Link, syncDir: syncDir,
+	}
 }
 
 // FreeSpace is the space an unprivileged writer may still use on dir's filesystem.
@@ -96,18 +109,38 @@ func (b *Bucket) fail(err error) error {
 	return b.check()
 }
 
+// failCommit fails the bucket after an fsync error on an object already visible.
+func (b *Bucket) failCommit(err error) error {
+	return fmt.Errorf("%w: %w", ErrStopped, b.fail(err))
+}
+
+// syncChain fsyncs every directory from dir up to objects/. Another Put may have created one
+// of them and not fsynced its entry yet: syncing the whole chain ourselves, rather than
+// trusting a directory we found, is the simplest way to acknowledge only a durable path.
+func (b *Bucket) syncChain(dir string) error {
+	top := filepath.Join(b.path, "objects")
+	for ; ; dir = filepath.Dir(dir) {
+		if err := b.syncDir(dir); err != nil {
+			return err
+		}
+		if dir == top || len(dir) <= len(top) {
+			return nil
+		}
+	}
+}
+
 func (b *Bucket) objectPath(k string) string {
 	return filepath.Join(b.path, "objects", filepath.FromSlash(k))
 }
 
 // errWriter remembers the file's write error, to tell it from the body's read error.
 type errWriter struct {
-	w   io.Writer
-	err error
+	write func([]byte) (int, error)
+	err   error
 }
 
 func (e *errWriter) Write(p []byte) (int, error) {
-	n, err := e.w.Write(p)
+	n, err := e.write(p)
 	if err != nil {
 		e.err = err
 	}
@@ -144,7 +177,7 @@ func (b *Bucket) Put(k string, size int64, sum [32]byte, body io.Reader) (create
 	}
 	defer os.Remove(f.Name()) // after a success too: objects/<key> is a second link
 	defer f.Close()
-	fw := &errWriter{w: f}
+	fw := &errWriter{write: func(p []byte) (int, error) { return b.write(f, p) }}
 	h := Header{Size: uint64(size), SHA256: sum, ReceiveTime: b.now().UnixNano()}
 	if _, err := fw.Write(h.Encode()); err != nil {
 		return false, b.fail(err)
@@ -161,7 +194,7 @@ func (b *Bucket) Put(k string, size int64, sum [32]byte, body io.Reader) (create
 	case !bytes.Equal(hasher.Sum(nil), sum[:]):
 		return false, ErrSHA256Mismatch
 	}
-	if err := f.Sync(); err != nil {
+	if err := b.syncFile(f); err != nil {
 		return false, b.fail(err)
 	}
 	if err := f.Close(); err != nil {
@@ -177,16 +210,21 @@ func (b *Bucket) Put(k string, size int64, sum [32]byte, body io.Reader) (create
 
 	dst := b.objectPath(k)
 	parent := filepath.Dir(dst)
-	if err := MkdirAllSync(parent); errors.Is(err, syscall.ENOTDIR) {
+	// The new directories become durable through syncChain below.
+	if err := os.MkdirAll(parent, 0o700); errors.Is(err, syscall.ENOTDIR) {
 		// shortcut: a key whose prefix is another object ("a" then "a/b") answers 409; ADR 0003 names no reason for it.
 		return false, fmt.Errorf("%w: a prefix of %s is an object", ErrExists, k)
 	} else if err != nil {
 		return false, b.fail(err)
 	}
-	switch err := os.Link(f.Name(), dst); {
+	switch err := b.link(f.Name(), dst); {
 	case err == nil:
-		if err := syncDir(parent); err != nil {
-			return false, b.fail(err)
+		if err := b.syncChain(parent); err != nil {
+			return false, b.failCommit(err)
+		}
+		// A concurrent call failed the bucket meanwhile: never acknowledge after that.
+		if err := b.check(); err != nil {
+			return false, err
 		}
 		return true, nil
 	case !errors.Is(err, fs.ErrExist):
@@ -201,11 +239,11 @@ func (b *Bucket) Put(k string, size int64, sum [32]byte, body io.Reader) (create
 	if old.Size != uint64(size) || old.SHA256 != sum {
 		return false, ErrExists
 	}
-	// A concurrent Put may have linked it without its parent's fsync yet: answer 200 only once durable.
-	if err := syncDir(parent); err != nil {
-		return false, b.fail(err)
+	// A concurrent Put may have linked it without its fsyncs yet: answer 200 only once durable.
+	if err := b.syncChain(parent); err != nil {
+		return false, b.failCommit(err)
 	}
-	return false, nil
+	return false, b.check()
 }
 
 // checkRefs reads the refs body written at tmp (ADR 0007): size/32 chunk ids in strictly

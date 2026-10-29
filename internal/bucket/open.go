@@ -119,7 +119,7 @@ func strictlyUnder(p, dir string) bool {
 // fsynced in its parent directory. FORMAT first: a crash midway leaves a bucket Open finishes,
 // never a non-empty directory without FORMAT, which would never be adopted.
 func create(path string) error {
-	if err := MkdirAllSync(path); err != nil {
+	if err := mkdirAllSync(path); err != nil {
 		return err
 	}
 	f, err := os.OpenFile(filepath.Join(path, "FORMAT"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
@@ -145,15 +145,15 @@ func create(path string) error {
 // makeSubdirs creates objects/ and tmp/ if missing, each fsynced in path.
 func makeSubdirs(path string) error {
 	for _, d := range []string{"objects", "tmp"} {
-		if err := MkdirAllSync(filepath.Join(path, d)); err != nil {
+		if err := mkdirAllSync(filepath.Join(path, d)); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// MkdirAllSync creates dir and its missing parents, fsyncing each new directory's parent.
-func MkdirAllSync(dir string) error {
+// mkdirAllSync creates dir and its missing parents, fsyncing each new directory's parent.
+func mkdirAllSync(dir string) error {
 	if fi, err := os.Stat(dir); err == nil {
 		if !fi.IsDir() {
 			return &fs.PathError{Op: "mkdir", Path: dir, Err: syscall.ENOTDIR}
@@ -161,7 +161,7 @@ func MkdirAllSync(dir string) error {
 		return nil
 	}
 	parent := filepath.Dir(dir)
-	if err := MkdirAllSync(parent); err != nil {
+	if err := mkdirAllSync(parent); err != nil {
 		return err
 	}
 	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
