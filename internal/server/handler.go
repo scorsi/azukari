@@ -20,7 +20,7 @@ import (
 // are set only once checked, so no line carries an unbounded or foreign value.
 type outcome struct {
 	call, bucket, peer, key string
-	code                    int
+	code, count             int // count: missing's keys asked, list's objects answered
 	reason                  string
 	bytes                   int64
 	err                     error
@@ -30,8 +30,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	o := &outcome{}
 	s.serve(w, r, o)
-	attrs := []any{"bucket", o.bucket, "peer_id", o.peer, "call", o.call, "key", o.key,
-		"code", o.code, "bytes", o.bytes, "dur_us", time.Since(start).Microseconds()}
+	keyOrCount := []any{"key", o.key}
+	if o.call == "missing" || o.call == "list" {
+		keyOrCount = []any{"count", o.count}
+	}
+	attrs := append([]any{"bucket", o.bucket, "peer_id", o.peer, "call", o.call}, keyOrCount...)
+	attrs = append(attrs, "code", o.code, "bytes", o.bytes, "dur_us", time.Since(start).Microseconds())
 	if o.code < 400 || o.code == http.StatusNotFound {
 		s.log.Info("", append([]any{"event", "request"}, attrs...)...)
 		return
@@ -62,11 +66,14 @@ func refuse(w http.ResponseWriter, r *http.Request, o *outcome, code int, reason
 func (s *Server) serve(w http.ResponseWriter, r *http.Request, o *outcome) {
 	rest, isV1 := strings.CutPrefix(r.URL.Path, "/v1/b/")
 	name, k, isObject := strings.Cut(rest, "/o/")
+	ctlName, ctl, _ := strings.Cut(rest, "/")
 	switch {
 	case isV1 && isObject && r.Method == http.MethodPut:
 		o.call = "put"
 	case isV1 && isObject && r.Method == http.MethodGet:
 		o.call = "get"
+	case isV1 && !isObject && r.Method == http.MethodPost && (ctl == "missing" || ctl == "list"):
+		o.call, name = ctl, ctlName
 	default:
 		refuse(w, r, o, http.StatusBadRequest, "request-invalid", nil)
 		return
@@ -95,6 +102,10 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, o *outcome) {
 	o.bucket = name
 	if !sb.nodes[id] || key.Check(host) != nil {
 		refuse(w, r, o, http.StatusForbidden, "forbidden", nil)
+		return
+	}
+	if o.call == "missing" || o.call == "list" {
+		s.control(w, r, o, sb, host)
 		return
 	}
 	if err := key.Check(k); err != nil {
@@ -154,6 +165,128 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, o *outcome) {
 		o.code = http.StatusOK
 		w.WriteHeader(o.code)
 	}
+}
+
+// Limits of the control calls (ADR 0003).
+const (
+	maxControlBytes = 4 << 20
+	maxKeys         = 10000
+)
+
+// control answers missing and list: one protobuf message each way (ADR 0003).
+func (s *Server) control(w http.ResponseWriter, r *http.Request, o *outcome, sb *served, host string) {
+	tooBig := func() {
+		if o.call == "missing" {
+			refuse(w, r, o, http.StatusRequestEntityTooLarge, "too-many-keys", nil)
+		} else {
+			refuse(w, r, o, http.StatusBadRequest, "request-invalid", errors.New("body over 4 MiB"))
+		}
+	}
+	if r.ContentLength > maxControlBytes {
+		tooBig()
+		return
+	}
+	if err := http.NewResponseController(w).SetReadDeadline(time.Now().Add(BodyTimeout)); err != nil {
+		refuse(w, r, o, http.StatusInternalServerError, "internal", err)
+		return
+	}
+	in, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxControlBytes))
+	var mbe *http.MaxBytesError
+	switch {
+	case errors.As(err, &mbe):
+		tooBig()
+		return
+	case err != nil:
+		refuse(w, r, o, http.StatusBadRequest, "request-invalid", err)
+		return
+	}
+
+	var resp proto.Message
+	if o.call == "missing" {
+		var req azukariv1.MissingRequest
+		if err := proto.Unmarshal(in, &req); err != nil {
+			refuse(w, r, o, http.StatusBadRequest, "request-invalid", err)
+			return
+		}
+		o.count = len(req.Keys)
+		if len(req.Keys) > maxKeys {
+			refuse(w, r, o, http.StatusRequestEntityTooLarge, "too-many-keys", nil)
+			return
+		}
+		for _, k := range req.Keys {
+			if err := key.Check(k); err != nil {
+				refuse(w, r, o, http.StatusBadRequest, "key-invalid", err)
+				return
+			}
+		}
+		for _, k := range req.Keys {
+			if key.Namespace(k) != host {
+				refuse(w, r, o, http.StatusForbidden, "namespace-forbidden", nil)
+				return
+			}
+		}
+		if sb.b == nil {
+			refuse(w, r, o, http.StatusServiceUnavailable, "bucket-unavailable", nil)
+			return
+		}
+		keys, err := sb.b.Missing(req.Keys)
+		if err != nil {
+			s.refuseErr(w, r, o, o.bucket, err)
+			return
+		}
+		resp = &azukariv1.MissingResponse{Keys: keys}
+	} else {
+		var req azukariv1.ListRequest
+		if err := proto.Unmarshal(in, &req); err != nil {
+			refuse(w, r, o, http.StatusBadRequest, "request-invalid", err)
+			return
+		}
+		if req.Limit > maxKeys {
+			refuse(w, r, o, http.StatusBadRequest, "request-invalid", errors.New("limit over 10000"))
+			return
+		}
+		// The prefix stays in the caller's namespace: its node name alone, or that name and "/".
+		prefix := req.Prefix
+		if prefix == host {
+			// shortcut: a bare key equal to the node name is not listed (no client writes one); list it too if one ever does.
+			prefix += "/"
+		}
+		if !strings.HasPrefix(prefix, host+"/") {
+			refuse(w, r, o, http.StatusForbidden, "namespace-forbidden", nil)
+			return
+		}
+		if sb.b == nil {
+			refuse(w, r, o, http.StatusServiceUnavailable, "bucket-unavailable", nil)
+			return
+		}
+		limit := int(req.Limit)
+		if limit == 0 {
+			limit = maxKeys // proto3's unset limit: the largest page
+		}
+		objs, next, err := sb.b.List(prefix, req.StartAfter, limit)
+		if err != nil {
+			s.refuseErr(w, r, o, o.bucket, err)
+			return
+		}
+		o.count = len(objs)
+		lr := &azukariv1.ListResponse{Next: next}
+		for _, ob := range objs {
+			lr.Objects = append(lr.Objects, &azukariv1.Object{Key: ob.Key, Size: ob.Size, Sha256: ob.SHA256[:]})
+		}
+		resp = lr
+	}
+	out, err := proto.Marshal(resp)
+	if err != nil {
+		refuse(w, r, o, http.StatusInternalServerError, "internal", err)
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", "application/x-protobuf")
+	h.Set("Content-Length", strconv.Itoa(len(out)))
+	o.code = http.StatusOK
+	w.WriteHeader(o.code)
+	n, _ := w.Write(out)
+	o.bytes = int64(n)
 }
 
 func (s *Server) get(w http.ResponseWriter, r *http.Request, o *outcome, b *bucket.Bucket, name string) {

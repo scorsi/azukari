@@ -164,7 +164,7 @@ func (e *env) do(t *testing.T, c *http.Client, method, path string, body io.Read
 	if a.body, err = io.ReadAll(resp.Body); err != nil {
 		t.Fatal(err)
 	}
-	if resp.Header.Get("Content-Type") == "application/x-protobuf" {
+	if resp.StatusCode >= 400 && resp.Header.Get("Content-Type") == "application/x-protobuf" {
 		var m azukariv1.Error
 		if err := proto.Unmarshal(a.body, &m); err != nil {
 			t.Fatal(err)
@@ -424,5 +424,165 @@ func TestStartLogs(t *testing.T) {
 	}
 	if l := seen["server-started/"]; l != nil && (len(l["buckets"].([]any)) != 3 || l["listen"].([]any)[0] != e.addr) {
 		t.Errorf("server-started %v", l)
+	}
+}
+
+// post sends a control message and decodes the answer into resp when it is 200.
+func (e *env) post(t *testing.T, c *http.Client, path string, req, resp proto.Message) answer {
+	t.Helper()
+	in, err := proto.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := e.do(t, c, "POST", path, bytes.NewReader(in), "")
+	if a.code == http.StatusOK {
+		if ct := a.resp.Header.Get("Content-Type"); ct != "application/x-protobuf" {
+			t.Fatalf("content type %q", ct)
+		}
+		if err := proto.Unmarshal(a.body, resp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return a
+}
+
+func TestMissingList(t *testing.T) {
+	e := start(t)
+	for _, h2 := range []bool{false, true} {
+		e := start(t)
+		c := e.client(t, nodeA, h2)
+		for _, k := range []string{"node-a/chunks/b", "node-a/chunks/a", "node-a/snapshots/1"} {
+			data := []byte(k)
+			if a := e.do(t, c, "PUT", "/v1/b/backup/o/"+k, bytes.NewReader(data), hexSum(data)); a.code != http.StatusCreated {
+				t.Fatalf("put %s: %d %q", k, a.code, a.reason)
+			}
+		}
+
+		var mr azukariv1.MissingResponse
+		ask := []string{"node-a/chunks/a", "node-a/chunks/c", "node-a/chunks/b", "node-a/x/y"}
+		if a := e.post(t, c, "/v1/b/backup/missing", &azukariv1.MissingRequest{Keys: ask}, &mr); a.code != 200 {
+			t.Fatalf("missing: %d %q", a.code, a.reason)
+		}
+		if got := strings.Join(mr.Keys, ","); got != "node-a/chunks/c,node-a/x/y" {
+			t.Fatalf("missing answered %q", got)
+		}
+
+		var lr azukariv1.ListResponse
+		if a := e.post(t, c, "/v1/b/backup/list", &azukariv1.ListRequest{Prefix: "node-a", Limit: 2}, &lr); a.code != 200 {
+			t.Fatalf("list: %d %q", a.code, a.reason)
+		}
+		if len(lr.Objects) != 2 || lr.Objects[0].Key != "node-a/chunks/a" || lr.Objects[1].Key != "node-a/chunks/b" || lr.Next != "node-a/chunks/b" {
+			t.Fatalf("first page %v", &lr)
+		}
+		if o := lr.Objects[0]; o.Size != uint64(len(o.Key)) || hex.EncodeToString(o.Sha256) != hexSum([]byte(o.Key)) {
+			t.Fatalf("object %v", o)
+		}
+		if a := e.post(t, c, "/v1/b/backup/list", &azukariv1.ListRequest{Prefix: "node-a/", StartAfter: lr.Next}, &lr); a.code != 200 {
+			t.Fatalf("list page 2: %d %q", a.code, a.reason)
+		}
+		if len(lr.Objects) != 1 || lr.Objects[0].Key != "node-a/snapshots/1" || lr.Next != "" {
+			t.Fatalf("last page %v", &lr)
+		}
+	}
+
+	c := e.client(t, nodeA, true)
+	data := []byte("x")
+	if a := e.do(t, c, "PUT", "/v1/b/backup/o/node-a/k", bytes.NewReader(data), hexSum(data)); a.code != http.StatusCreated {
+		t.Fatalf("put: %d", a.code)
+	}
+	var mr azukariv1.MissingResponse
+	e.post(t, c, "/v1/b/backup/missing", &azukariv1.MissingRequest{Keys: []string{"node-a/k", "node-a/l"}}, &mr)
+	var line map[string]any
+	for _, l := range e.logs.lines(t) {
+		if l["event"] == "request" && l["call"] == "missing" {
+			line = l
+		}
+	}
+	if line == nil || line["count"] != 2.0 || line["code"] != 200.0 || line["bucket"] != "backup" || line["peer_id"] != nodeA {
+		t.Fatalf("missing request line %v", line)
+	}
+	if _, ok := line["key"]; ok {
+		t.Errorf("missing line carries a key: %v", line)
+	}
+}
+
+func TestControlRefusals(t *testing.T) {
+	e := start(t)
+	c := e.client(t, nodeA, true)
+	many := make([]string, 10001)
+	for i := range many {
+		many[i] = "node-a/k"
+	}
+	cases := []struct {
+		name, path string
+		req        proto.Message
+		code       int
+		reason     string
+	}{
+		{"too many keys", "/v1/b/backup/missing", &azukariv1.MissingRequest{Keys: many}, 413, "too-many-keys"},
+		{"key invalid", "/v1/b/backup/missing", &azukariv1.MissingRequest{Keys: []string{"node-a/k", "node-a/../x"}}, 400, "key-invalid"},
+		{"foreign key", "/v1/b/backup/missing", &azukariv1.MissingRequest{Keys: []string{"node-a/k", "node-b/k"}}, 403, "namespace-forbidden"},
+		{"foreign key on a down bucket", "/v1/b/down/missing", &azukariv1.MissingRequest{Keys: []string{"node-b/k"}}, 403, "namespace-forbidden"},
+		{"missing on a down bucket", "/v1/b/down/missing", &azukariv1.MissingRequest{Keys: []string{"node-a/k"}}, 503, "bucket-unavailable"},
+		{"missing unknown bucket", "/v1/b/nope/missing", &azukariv1.MissingRequest{}, 404, "bucket-unknown"},
+		{"limit too high", "/v1/b/backup/list", &azukariv1.ListRequest{Prefix: "node-a/", Limit: 10001}, 400, "request-invalid"},
+		{"empty prefix", "/v1/b/backup/list", &azukariv1.ListRequest{}, 403, "namespace-forbidden"},
+		{"foreign prefix", "/v1/b/backup/list", &azukariv1.ListRequest{Prefix: "node-b/"}, 403, "namespace-forbidden"},
+		{"sibling prefix", "/v1/b/backup/list", &azukariv1.ListRequest{Prefix: "node-ab"}, 403, "namespace-forbidden"},
+		{"partial node prefix", "/v1/b/backup/list", &azukariv1.ListRequest{Prefix: "node-"}, 403, "namespace-forbidden"},
+		{"list on a down bucket", "/v1/b/down/list", &azukariv1.ListRequest{Prefix: "node-a/"}, 503, "bucket-unavailable"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if a := e.post(t, c, tc.path, tc.req, nil); a.code != tc.code || a.reason != tc.reason {
+				t.Fatalf("got %d %q, want %d %q", a.code, a.reason, tc.code, tc.reason)
+			}
+		})
+	}
+
+	raw := []struct {
+		name, method, path string
+		body               []byte
+		code               int
+		reason             string
+	}{
+		{"malformed missing", "POST", "/v1/b/backup/missing", []byte{0xff, 0xff}, 400, "request-invalid"},
+		{"malformed list", "POST", "/v1/b/backup/list", []byte{0xff, 0xff}, 400, "request-invalid"},
+		{"missing over 4 MiB", "POST", "/v1/b/backup/missing", make([]byte, 4<<20+1), 413, "too-many-keys"},
+		{"list over 4 MiB", "POST", "/v1/b/backup/list", make([]byte, 4<<20+1), 400, "request-invalid"},
+		{"get on missing", "GET", "/v1/b/backup/missing", nil, 400, "request-invalid"},
+		{"unknown control call", "POST", "/v1/b/backup/delete", nil, 400, "request-invalid"},
+	}
+	for _, tc := range raw {
+		t.Run(tc.name, func(t *testing.T) {
+			var body io.Reader
+			if tc.body != nil {
+				body = bytes.NewReader(tc.body)
+			}
+			if a := e.do(t, c, tc.method, tc.path, body, ""); a.code != tc.code || a.reason != tc.reason {
+				t.Fatalf("got %d %q, want %d %q", a.code, a.reason, tc.code, tc.reason)
+			}
+		})
+	}
+	t.Run("over 4 MiB without length", func(t *testing.T) {
+		for _, h2 := range []bool{false, true} {
+			body := io.MultiReader(bytes.NewReader(make([]byte, 4<<20+1)))
+			if a := e.do(t, e.client(t, nodeA, h2), "POST", "/v1/b/backup/list", body, ""); a.code != 400 || a.reason != "request-invalid" {
+				t.Fatalf("h2=%v: got %d %q", h2, a.code, a.reason)
+			}
+		}
+	})
+	t.Run("unknown ID", func(t *testing.T) {
+		if a := e.post(t, e.client(t, stranger, true), "/v1/b/backup/list", &azukariv1.ListRequest{Prefix: "node-z/"}, nil); a.code != 403 || a.reason != "forbidden" {
+			t.Fatalf("got %d %q", a.code, a.reason)
+		}
+	})
+
+	for _, l := range e.logs.lines(t) {
+		if l["event"] == "request-refused" && (l["call"] == "missing" || l["call"] == "list") {
+			if _, ok := l["count"]; !ok {
+				t.Errorf("refused control line lacks count: %v", l)
+			}
+		}
 	}
 }
