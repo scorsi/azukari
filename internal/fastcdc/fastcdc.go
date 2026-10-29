@@ -74,6 +74,11 @@ func New(r io.Reader, gear [256]uint64) *Chunker {
 	return &Chunker{r: r, gear: gear, buf: make([]byte, MaxSize)}
 }
 
+// Reset makes c chunk r from its start, keeping the buffer: one Chunker serves every file.
+func (c *Chunker) Reset(r io.Reader) {
+	c.r, c.start, c.end, c.eof = r, 0, 0, false
+}
+
 // Next returns the next chunk, or io.EOF after the last one (at once for an empty stream).
 // The chunk is only valid until the next call. A read error is returned as is.
 func (c *Chunker) Next() ([]byte, error) {

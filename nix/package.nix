@@ -25,7 +25,7 @@ buildGoModule (finalAttrs: {
   };
 
   # After a go.mod change: set to lib.fakeHash and read the value from the build error.
-  vendorHash = "sha256-vGi2sR4rSM7ayErWfPyMUFwdiK3ICl+Dnp/ghvHTy/g=";
+  vendorHash = "sha256-ZqoBd9IahG/bh/5QwmbWdbZdAeHqcp+FHGoTVXfbET0=";
 
   env.CGO_ENABLED = 0;
   ldflags = [
