@@ -68,7 +68,7 @@
                   touch $out
                 '';
 
-            # The store and the operator command never link the encryption package (ADR 0002, 0010).
+            # The store and the operator command never link the sealing package nor x/crypto (ADR 0002, 0010).
             no-encryption =
               pkgs.runCommand "azukari-no-encryption"
                 {
@@ -80,8 +80,8 @@
                   cp -r $src work && chmod -R u+w work && cd work
                   cp -r ${azukari.goModules} vendor
                   go list -deps ./cmd/azukari-server ./cmd/azukari > deps
-                  if grep chacha20poly1305 deps; then
-                    echo "azukari-server or azukari imports encryption code"
+                  if grep -E '^(github\.com/scorsi/azukari/internal/seal(/|$)|golang\.org/x/crypto/)' deps; then
+                    echo "azukari-server or azukari imports the sealing package or golang.org/x/crypto"
                     exit 1
                   fi
                   touch $out
