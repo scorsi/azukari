@@ -59,10 +59,10 @@ kebab-case string tested by the clients:
 
 | Status | Reasons |
 |---|---|
-| 400 | `key-invalid`, `sha256-mismatch`, `sha256-missing`, `request-invalid` |
+| 400 | `key-invalid`, `sha256-mismatch`, `sha256-missing`, `request-invalid`, `refs-invalid` (ADR 0007) |
 | 403 | `forbidden` (identity without this right on this bucket), `namespace-forbidden` (another node's namespace in a `backup` bucket) |
 | 404 | `bucket-unknown`, `object-unknown` |
-| 409 | `object-exists` |
+| 409 | `object-exists`, `refs-incomplete` (ADR 0007) |
 | 411 | `length-required` |
 | 413 | `object-too-large` (the bucket's `max_object_bytes`), `too-many-keys` |
 | 503 | `busy` (connection limit), `stopped` (writer stopped after an uncertain commit) |

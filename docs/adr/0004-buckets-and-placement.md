@@ -56,7 +56,8 @@ How an object's hash and size are kept (the `GET` and `list` of ADR 0003 return 
 - **Layout** under `path`: `FORMAT` (layout version, `1`), `objects/<key>` (the key's segments
   are directories; key syntax in ADR 0003 makes this safe), `tmp/`. Fan-out is the key's
   design (the backup format's keys carry it), not the store's.
-- **Object file**: a 64-byte header (magic `AZKO`, version, flags, size, SHA-256 of the body)
+- **Object file**: a 64-byte header (magic `AZKO`, version, flags, size, SHA-256 of the body,
+  the store's receive time, ADR 0007)
   then the body. `GET` and `list` read the header; every object can be checked
   offline against it.
 - **Write path**: stream the body into `tmp/<random>` hashing it, refuse on size or hash
