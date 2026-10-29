@@ -1,6 +1,6 @@
 # ADR 0003 — Protocol
 
-Status: Accepted — 2026-10-29. Busy answer superseded by ADR 0012; internal error added by ADR 0013.
+Status: Accepted — 2026-10-29. Busy answer superseded by ADR 0012; internal error added by ADR 0013; key alphabet superseded by ADR 0015.
 
 ## Context
 
