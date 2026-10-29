@@ -1,5 +1,6 @@
 # nixosTest `backup-restore` (ADR 0010, v0 acceptance, milestone M2): node-a backs up a varied
-# tree exported through `services.azukari-backup.exports`, the run as `azukari-backup` with no
+# tree exported through `services.azukari-backup.exports` (with a file hard-linked from the
+# service's data outside the export, ADR 0022, 0023), the run as `azukari-backup` with no
 # capability (ADR 0020, 0021); a second, fresh VM holding only node-a's data key and SVID restores
 # it as root, and the trees compare equal (`diff -r` and a stat listing). One file changes, the
 # second backup adds only a few chunks, the first snapshot still restores the original tree;
@@ -46,17 +47,19 @@ let
     # keeps it in the root-only fixture /srv/fixture and the export copies it. Root, because only
     # root sets the exotic owners (uid 4242, alice) whose restore is tested; a service's export
     # would run as that service's user. `cp -a` keeps modes, owners, mtimes and links.
-    # Then one hard link given the export's group (ADR 0022): `big` and `linked` share an inode
-    # the backup reads only through its membership in azukari-export-data. The link is made inside
-    # the export: the sandbox's ReadWritePaths= is its own mount, a link from outside gets EXDEV.
+    # Then a service's sealed file, hard-linked from outside the export (ADR 0022, 0023): the
+    # root-only /persist/data holds `day-1`; the export gives it the export's group and links it
+    # in, so the backup reads it only through azukari-export-data. The writable path is /persist,
+    # the common parent of both on one filesystem: two writable paths are two mounts (EXDEV).
     services.azukari-backup.exports.data = {
       user = "root";
+      writablePaths = [ "/persist" ];
       command = ''
         find "$EXPORT_DIR" -mindepth 1 -delete
         cp -a /srv/fixture/. "$EXPORT_DIR"
-        ln "$EXPORT_DIR/big" "$EXPORT_DIR/linked"
-        chgrp azukari-export-data "$EXPORT_DIR/linked"
-        chmod 0640 "$EXPORT_DIR/linked"
+        chgrp azukari-export-data /persist/data/day-1
+        chmod 0640 /persist/data/day-1
+        ln /persist/data/day-1 "$EXPORT_DIR/day-1"
       '';
     };
     # The tree holds a setuid file (its mode must survive a restore); the export's
@@ -196,14 +199,21 @@ pkgs.testers.runNixOSTest {
             " && touch -h -d '2002-03-04 05:06:07.5' rel-link abs-link dangling dir-link"
             " && touch -d '2003-04-05 06:07:08.25' a/b/c a/b a empty-dir ."
         )
+        # The service's own data, outside the export and root-only: the export links from it.
+        node_a.succeed(
+            "mkdir -m 0700 /persist/data && head -c 1M /dev/urandom > /persist/data/day-1"
+            " && chmod 0600 /persist/data/day-1"
+        )
 
     with subtest("first backup: the export, one snapshot, restored on the fresh VM equal to the tree"):
         backup()
         orig = capture("one")
         assert " 4755 " in orig and " 1777 " in orig, orig
-        # The hard link, group azukari-export-data and no world read, was backed up and restored.
-        node_a.succeed(f"test \"$(stat -c '%G %a %h' {data}/linked)\" = 'azukari-export-data 640 2'")
-        assert "./linked f 640 " in orig, orig
+        # The hard link from /persist/data, group azukari-export-data and no world read, was
+        # backed up and restored.
+        node_a.succeed(f"test \"$(stat -c '%G %a %h %i' {data}/day-1)\" = \"$(stat -c '%G %a %h %i' /persist/data/day-1)\"")
+        node_a.succeed(f"test \"$(stat -c '%G %a %h' {data}/day-1)\" = 'azukari-export-data 640 2'")
+        assert "./day-1 f 640 " in orig, orig
         first = snapshots()
         assert len(first) == 1, first
         before = chunks()

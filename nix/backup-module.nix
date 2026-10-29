@@ -95,30 +95,44 @@ in
         directory carries (mode 2750, owner `user`); `<name>` may hold 17 characters at most.
       '';
       type = types.attrsOf (
-        types.submodule {
-          options = {
-            user = mkOption {
-              type = types.str;
-              description = "The service's user: the export runs as it and owns the directory.";
+        types.submodule (
+          { name, ... }:
+          {
+            options = {
+              user = mkOption {
+                type = types.str;
+                description = "The service's user: the export runs as it and owns the directory.";
+              };
+              group = mkOption {
+                type = types.nullOr types.str;
+                default = null;
+                description = "The export's `Group=`, when the service needs one; null keeps the user's group.";
+              };
+              command = mkOption {
+                type = types.str;
+                description = ''
+                  Shell script (`set -e`) writing the export into `$EXPORT_DIR`; it may write only
+                  in `writablePaths`. It must replace the previous export, never add next to it: the history lives
+                  in azukari. Files are written group-readable (`UMask=0027`) and get the group
+                  `azukari-export-<name>` from the setgid directory. A file hard-linked into it keeps
+                  its own group: the command gives it the export's group (`chgrp`, then mode 0640),
+                  and links only files the service never writes again (ADR 0022).
+                '';
+              };
+              writablePaths = mkOption {
+                type = types.listOf (types.strMatching "/.*");
+                default = [ (exportDir name) ];
+                defaultText = lib.literalExpression ''[ "<exportsDir>/<name>" ]'';
+                description = ''
+                  The export unit's `ReadWritePaths=` (ADR 0023): absolute paths, one of them the
+                  export's directory or one of its parents. An export that hard-links the service's
+                  files sets a common parent of the service's data and the directory: a link across
+                  two writable paths is two mounts (`EXDEV`). The unit still writes only what `user` may.
+                '';
+              };
             };
-            group = mkOption {
-              type = types.nullOr types.str;
-              default = null;
-              description = "The export's `Group=`, when the service needs one; null keeps the user's group.";
-            };
-            command = mkOption {
-              type = types.str;
-              description = ''
-                Shell script (`set -e`) writing the export into `$EXPORT_DIR`, the only path it may
-                write. It must replace the previous export, never add next to it: the history lives
-                in azukari. Files are written group-readable (`UMask=0027`) and get the group
-                `azukari-export-<name>` from the setgid directory. A file hard-linked into it keeps
-                its own group: the command gives it the export's group (`chgrp`, then mode 0640),
-                and links only files the service never writes again (ADR 0022).
-              '';
-            };
-          };
-        }
+          }
+        )
       );
     };
   };
@@ -138,7 +152,14 @@ in
       ++ map (name: {
         assertion = lib.stringLength (exportGroup name) <= 32;
         message = "services.azukari-backup.exports.${name}: the group ${exportGroup name} is longer than 32 characters; shorten the name.";
-      }) (lib.attrNames cfg.exports);
+      }) (lib.attrNames cfg.exports)
+      # The export must be able to write its own directory (ADR 0023). Lexical: no `..` resolution.
+      ++ lib.mapAttrsToList (name: e: {
+        assertion = lib.any (
+          p: p == exportDir name || lib.hasPrefix (lib.removeSuffix "/" p + "/") (exportDir name)
+        ) e.writablePaths;
+        message = "services.azukari-backup.exports.${name}.writablePaths: none is ${exportDir name} or one of its parents.";
+      }) cfg.exports;
 
     users.users.azukari-backup = {
       isSystemUser = true;
@@ -185,10 +206,10 @@ in
             User = e.user;
             Group = lib.mkIf (e.group != null) e.group;
             UMask = "0027"; # Group-readable for azukari-backup, through the export's group.
-            # Hardening as the backup run, writable only in its directory. Not the run's syscall filter
-            # nor MemoryDenyWriteExecute: the command is any service's dump tool.
+            # Hardening as the backup run, writable only in its paths (ADR 0023). Not the run's syscall
+            # filter nor MemoryDenyWriteExecute: the command is any service's dump tool.
             ProtectSystem = "strict";
-            ReadWritePaths = [ (exportDir name) ];
+            ReadWritePaths = e.writablePaths;
             ProtectHome = true;
             PrivateTmp = true;
             PrivateDevices = true;

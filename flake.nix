@@ -177,6 +177,25 @@
                 longName = backupFor linux {
                   services.azukari-backup.exports.${lib.fixedWidthString 18 "a" ""}.user = "db";
                 };
+                # Writable paths (ADR 0023): a parent of the directory, or none of them.
+                writableFor =
+                  paths:
+                  backupFor linux {
+                    services.azukari-backup.exports.db = {
+                      user = "db";
+                      command = "true";
+                      writablePaths = paths;
+                    };
+                  };
+                parent = writableFor [
+                  "/var/lib/db"
+                  "/persist"
+                ];
+                # A sibling sharing the directory's prefix is not a parent.
+                noParent = writableFor [
+                  "/var/lib/db"
+                  "/persist/backups/db2"
+                ];
                 rootExport = backupFor linux {
                   services.azukari-backup.exports.${lib.fixedWidthString 17 "a" ""} = {
                     user = "root";
@@ -255,6 +274,14 @@
                 ];
               assert failed badName == failed backup + 1;
               assert failed longName == failed backup + 1 && failed rootExport == failed backup;
+              assert
+                parent.systemd.services.azukari-export-db.serviceConfig.ReadWritePaths == [
+                  "/var/lib/db"
+                  "/persist"
+                ]
+                && failed withExport == failed backup
+                && failed parent == failed backup
+                && failed noParent == failed backup + 1;
               pkgs.runCommand "azukari-backup-module-eval" { } ''
                 echo ${lib.escapeShellArg (builtins.unsafeDiscardStringContext (builtins.toJSON sc))} > $out
               '';
