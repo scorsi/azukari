@@ -259,3 +259,19 @@ func TestReload(t *testing.T) {
 		t.Fatalf("after failed reload: server %v, client %v", srvErr, cliErr)
 	}
 }
+
+func TestID(t *testing.T) {
+	ca := testca.New(t)
+	id, host, err := source(t, ca, nodeID).ID()
+	if err != nil || id != nodeID || host != "node-a" {
+		t.Fatalf("got %q %q %v", id, host, err)
+	}
+	cert, key := ca.Issue(t, "spiffe://other.example.org/node-a/azukari-backup", nil)
+	s, err := Load(testca.Files(t, cert, key, ca.PEM))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.ID(); err == nil || !strings.Contains(err.Error(), "outside trust domain") {
+		t.Fatalf("err = %v", err)
+	}
+}

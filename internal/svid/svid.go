@@ -50,6 +50,21 @@ func (s *Source) NotAfter() time.Time {
 	return s.cur.Load().cert.Leaf.NotAfter
 }
 
+// ID is the current SVID's own SPIFFE ID and its <host> segment, the node's namespace in a
+// backup bucket (ADR 0003, 0011).
+func (s *Source) ID() (id, host string, err error) {
+	leaf := s.cur.Load().cert.Leaf
+	if len(leaf.URIs) != 1 {
+		return "", "", fmt.Errorf("own SVID has %d URI SANs, want 1", len(leaf.URIs))
+	}
+	id = leaf.URIs[0].String()
+	host, err = config.CheckID(id, s.files.TrustDomain)
+	if err != nil {
+		return "", "", fmt.Errorf("own ID %q %w", id, err)
+	}
+	return id, host, nil
+}
+
 func load(f config.TLS) (*material, error) {
 	certPEM, err := os.ReadFile(f.SVIDFile)
 	if err != nil {
