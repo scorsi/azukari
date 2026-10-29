@@ -8,17 +8,19 @@
 
 <identity> is a directory of <ca> holding svid.pem and key.pem; the store is verified against
 <ca>/bundle.pem (its SVID has no DNS SAN: no hostname check, as azukari-backup).
+The bucket is "backup", or $BUCKET when set.
 """
 
 import hashlib
 import http.client
+import os
 import socket
 import ssl
 import sys
 import time
 
 STORE = ("127.0.0.1", 8443)
-BUCKET = "backup"
+BUCKET = os.environ.get("BUCKET", "backup")
 
 
 def context(ca, identity, alpn):

@@ -175,6 +175,10 @@
               inherit self pkgs;
               inherit (inputs) nisshi masu;
             };
+            bucket-mount = import ./nix/tests/bucket-mount.nix {
+              inherit self pkgs;
+              inherit (inputs) nisshi masu;
+            };
           };
 
           devShells.default = pkgs.mkShellNoCC {
