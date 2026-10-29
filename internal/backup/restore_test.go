@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -91,6 +92,9 @@ func TestRestore(t *testing.T) {
 	if e.logs.count(`"restore-completed"`) != 1 {
 		t.Error("no restore-completed")
 	}
+	if owners := fmt.Sprintf(`"owners":%t`, os.Geteuid() == 0); e.logs.count(owners) != 1 {
+		t.Errorf("restore-completed without %s", owners)
+	}
 
 	// A non-empty target is refused, a symlink to a directory too.
 	if err := e.restore(first, target, false); err == nil || !strings.Contains(err.Error(), "not empty") {
@@ -109,6 +113,9 @@ func TestRestore(t *testing.T) {
 	}
 	if _, err := os.Lstat(absent); !os.IsNotExist(err) {
 		t.Errorf("verify wrote %s: %v", absent, err)
+	}
+	if e.logs.count(`"verify":true,"owners":false`) != 1 { // never owners under verify, even as root
+		t.Error("verify's restore-completed without owners false")
 	}
 
 	// A second snapshot with a change: the first still restores as it was.

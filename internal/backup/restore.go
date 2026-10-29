@@ -134,7 +134,7 @@ func Restore(ctx context.Context, cfg *config.Backup, name, target string, verif
 		return err
 	}
 	log.Info("", "event", "restore-completed", "bucket", cfg.Bucket, "snapshot", name, "verify", verify,
-		"entries", r.entries, "bytes", r.bytes, "chunks", len(r.chunks), "dur_us", time.Since(began).Microseconds())
+		"owners", r.asRoot && !verify, "entries", r.entries, "bytes", r.bytes, "chunks", len(r.chunks), "dur_us", time.Since(began).Microseconds())
 	return nil
 }
 
