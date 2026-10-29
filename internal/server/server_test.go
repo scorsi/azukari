@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -262,6 +263,8 @@ func TestRefusals(t *testing.T) {
 	}{
 		{"sha256 missing", "PUT", "/v1/b/backup/o/node-a/x", data, "", 400, "sha256-missing"},
 		{"sha256 not hex", "PUT", "/v1/b/backup/o/node-a/x", data, "zz", 400, "request-invalid"},
+		{"sha256 too long", "PUT", "/v1/b/backup/o/node-a/x", data, hexSum(data) + "00", 400, "request-invalid"},
+		{"sha256 too short", "PUT", "/v1/b/backup/o/node-a/x", data, hexSum(data)[2:], 400, "request-invalid"},
 		{"sha256 mismatch", "PUT", "/v1/b/backup/o/node-a/x", data, hexSum([]byte("else")), 400, "sha256-mismatch"},
 		{"too large", "PUT", "/v1/b/backup/o/node-a/x", big, hexSum(big), 413, "object-too-large"},
 		{"key invalid", "PUT", "/v1/b/backup/o/node-a/Bad", data, hexSum(data), 400, "key-invalid"},
@@ -330,13 +333,19 @@ func dialTLS(t *testing.T, e *env, alpn string) *tls.Conn {
 // Refusals that need no body are answered while the body is still being sent (ADR 0003).
 func TestRefusedBeforeBody(t *testing.T) {
 	e := start(t)
-	for _, tc := range []struct{ path, status string }{
-		{"/v1/b/backup/o/node-b/x", "403"},
-		{"/v1/b/backup/o/node-a/x", "413"},
-		{"/v1/b/nope/o/node-a/x", "404"},
+	data := []byte("stored")
+	if a := e.do(t, e.client(t, nodeA, false), "PUT", "/v1/b/backup/o/node-a/stored", bytes.NewReader(data), hexSum(data)); a.code != 201 {
+		t.Fatalf("put: %d", a.code)
+	}
+	for _, tc := range []struct{ method, path, status string }{
+		{"PUT", "/v1/b/backup/o/node-b/x", "403"},
+		{"PUT", "/v1/b/backup/o/node-a/x", "413"},
+		{"PUT", "/v1/b/nope/o/node-a/x", "404"},
+		// A GET with a withheld body: net/http would wait for it before sending the object.
+		{"GET", "/v1/b/backup/o/node-a/stored", "400"},
 	} {
 		c := dialTLS(t, e, "http/1.1")
-		req := "PUT " + tc.path + " HTTP/1.1\r\nHost: store\r\nContent-Length: 100000\r\nAzukari-Sha256: " +
+		req := tc.method + " " + tc.path + " HTTP/1.1\r\nHost: store\r\nContent-Length: 100000\r\nAzukari-Sha256: " +
 			strings.Repeat("0", 64) + "\r\n\r\n" + strings.Repeat("x", 100)
 		if _, err := io.WriteString(c, req); err != nil {
 			t.Fatal(err)
@@ -352,29 +361,108 @@ func TestRefusedBeforeBody(t *testing.T) {
 	}
 }
 
-// An HTTP/2 connection held after its preface is closed like held HTTP/1 headers (ADR 0003).
+const h2Preface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+
+// h2frame encodes one HTTP/2 frame (RFC 9113 4.1).
+func h2frame(typ, flags byte, stream uint32, payload []byte) []byte {
+	b := []byte{byte(len(payload) >> 16), byte(len(payload) >> 8), byte(len(payload)), typ, flags,
+		byte(stream >> 24), byte(stream >> 16), byte(stream >> 8), byte(stream)}
+	return append(b, payload...)
+}
+
+// hpack encodes name/value pairs as literals without indexing, new name (RFC 7541 6.2.2);
+// every string under 128 bytes.
+func hpack(kv ...string) []byte {
+	var b []byte
+	for i, s := range kv {
+		if i%2 == 0 {
+			b = append(b, 0)
+		}
+		b = append(append(b, byte(len(s))), s...)
+	}
+	return b
+}
+
+// dialH2 opens an HTTP/2 connection as node-a and sends the preface and settings.
+func dialH2(t *testing.T, e *env, settings []byte) *tls.Conn {
+	t.Helper()
+	c := dialTLS(t, e, "h2")
+	if p := c.ConnectionState().NegotiatedProtocol; p != "h2" {
+		t.Fatalf("ALPN %q", p)
+	}
+	if _, err := c.Write(append([]byte(h2Preface), h2frame(0x4, 0, 0, settings)...)); err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// An HTTP/2 connection held after its preface, or in the middle of a HEADERS block while
+// another stream is open, is closed like held HTTP/1 headers (ADR 0003).
 func TestHeldPrefaceClosed(t *testing.T) {
 	old := HeaderTimeout
 	HeaderTimeout = 300 * time.Millisecond
 	t.Cleanup(func() { HeaderTimeout = old })
 	e := start(t)
-	c := dialTLS(t, e, "h2")
-	if p := c.ConnectionState().NegotiatedProtocol; p != "h2" {
-		t.Fatalf("ALPN %q", p)
+	put := hpack(":method", "PUT", ":scheme", "https", ":authority", "store", ":path", "/v1/b/backup/o/node-a/held",
+		"content-length", "10", "azukari-sha256", strings.Repeat("0", 64))
+	for name, frames := range map[string][]byte{
+		"preface": nil,
+		// Stream 1 waits for its body (BodyTimeout, 60 s); stream 3's HEADERS lacks END_HEADERS.
+		"headers beside an active stream": append(h2frame(0x1, 0x4, 1, put), h2frame(0x1, 0, 3, hpack(":method", "GET"))...),
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := dialH2(t, e, nil)
+			if _, err := c.Write(frames); err != nil {
+				t.Fatal(err)
+			}
+			began := time.Now()
+			c.SetReadDeadline(began.Add(5 * time.Second))
+			_, err := io.Copy(io.Discard, c)
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() {
+				t.Fatal("held connection still open after 5 s")
+			}
+			if d := time.Since(began); d > 3*time.Second {
+				t.Fatalf("closed after %v", d)
+			}
+			// Let stream 1's handler finish before another test changes the timeouts it reads.
+			for frames != nil && !strings.Contains(e.logs.String(), "node-a/held") {
+				time.Sleep(time.Millisecond)
+			}
+		})
 	}
-	// Preface, then an empty SETTINGS frame; then nothing.
-	if _, err := io.WriteString(c, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\x00\x00\x00\x04\x00\x00\x00\x00\x00"); err != nil {
+}
+
+// A control response the client never reads is bounded by the write deadline (ADR 0003): with
+// an HTTP/2 window of 0 the store cannot send it, and resets the stream once BodyTimeout passes.
+func TestControlWriteDeadline(t *testing.T) {
+	old := BodyTimeout
+	BodyTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { BodyTimeout = old })
+	e := start(t)
+	body, err := proto.Marshal(&azukariv1.MissingRequest{Keys: []string{"node-a/x"}})
+	if err != nil {
 		t.Fatal(err)
 	}
-	began := time.Now()
-	c.SetReadDeadline(began.Add(5 * time.Second))
-	_, err := io.Copy(io.Discard, c)
-	var ne net.Error
-	if errors.As(err, &ne) && ne.Timeout() {
-		t.Fatal("held connection still open after 5 s")
+	c := dialH2(t, e, []byte{0, 0x4, 0, 0, 0, 0}) // SETTINGS_INITIAL_WINDOW_SIZE = 0
+	req := h2frame(0x1, 0x4, 1, hpack(":method", "POST", ":scheme", "https", ":authority", "store",
+		":path", "/v1/b/backup/missing", "content-length", strconv.Itoa(len(body))))
+	if _, err := c.Write(append(req, h2frame(0x0, 0x1, 1, body)...)); err != nil {
+		t.Fatal(err)
 	}
-	if d := time.Since(began); d > 3*time.Second {
-		t.Fatalf("closed after %v", d)
+	c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	br := bufio.NewReader(c)
+	for {
+		var h [9]byte
+		if _, err := io.ReadFull(br, h[:]); err != nil {
+			t.Fatalf("no RST_STREAM on stream 1: %v", err)
+		}
+		if _, err := br.Discard(int(h[0])<<16 | int(h[1])<<8 | int(h[2])); err != nil {
+			t.Fatal(err)
+		}
+		if h[3] == 0x3 && h[8] == 1 {
+			return
+		}
 	}
 }
 

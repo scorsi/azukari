@@ -20,8 +20,9 @@ import (
 // Limits of ADR 0003. Variables so tests can shrink them.
 var (
 	// HeaderTimeout bounds the TLS handshake and a request's headers, and closes a connection
-	// idle between requests: on HTTP/2 that is a connection held after its preface (or a
-	// HEADERS frame left incomplete), since no stream is open then.
+	// idle between requests: on HTTP/2 that is a connection held after its preface. An HTTP/2
+	// header block left incomplete while other streams are open is bounded by the ping health
+	// check (see Serve).
 	HeaderTimeout = 10 * time.Second
 	// BodyTimeout bounds a request's body, and a response's (GET), per request or stream.
 	BodyTimeout = 60 * time.Second
@@ -96,7 +97,17 @@ func (s *Server) Serve(ctx context.Context, lns []net.Listener) error {
 		TLSConfig:         s.src.ServerConfig(), // built once: it reads the current SVID per handshake
 		ReadHeaderTimeout: HeaderTimeout,
 		IdleTimeout:       HeaderTimeout,
-		HTTP2:             &http.HTTP2Config{MaxConcurrentStreams: MaxStreams},
+		HTTP2: &http.HTTP2Config{
+			MaxConcurrentStreams: MaxStreams,
+			// The h2 server reads HEADERS and its CONTINUATIONs as one frame, and a client may send
+			// nothing else in between (RFC 9113 6.10), so it cannot answer this ping: a header block
+			// left incomplete closes the connection within HeaderTimeout of the last whole frame,
+			// even while other streams keep the idle timer stopped.
+			SendPingTimeout: HeaderTimeout / 2,
+			PingTimeout:     HeaderTimeout / 2,
+			// A peer that stops reading the connection closes it (per-stream write deadlines do not).
+			WriteByteTimeout: BodyTimeout,
+		},
 		ErrorLog: logging.Std(s.log, func(line string) string {
 			if strings.HasPrefix(line, handshakeError) {
 				s.handshakeError()

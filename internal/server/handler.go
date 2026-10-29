@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -60,8 +61,16 @@ func refuse(w http.ResponseWriter, r *http.Request, o *outcome, code int, reason
 		// first. HTTP/2 resets the stream instead (Connection: close there would end every stream).
 		h.Set("Connection", "close")
 	}
-	w.WriteHeader(code)
+	writeHeader(w, code)
 	w.Write(body)
+}
+
+// writeHeader starts a response under BodyTimeout's write deadline, so no response, control
+// or refusal included, waits forever on a client that stops reading (ADR 0003).
+func writeHeader(w http.ResponseWriter, code int) {
+	// net/http's writers support deadlines on HTTP/1 and HTTP/2; nothing to refuse past this point anyway.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(BodyTimeout))
+	w.WriteHeader(code)
 }
 
 func (s *Server) serve(w http.ResponseWriter, r *http.Request, o *outcome) {
@@ -77,6 +86,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, o *outcome) {
 		o.call, name = ctl, ctlName
 	default:
 		refuse(w, r, o, http.StatusBadRequest, "request-invalid", nil)
+		return
+	}
+	if o.call == "get" && r.ContentLength != 0 {
+		// HTTP/1 would wait for this body before answering, with no deadline: refuse it at once.
+		refuse(w, r, o, http.StatusBadRequest, "request-invalid", errors.New("GET with a body"))
 		return
 	}
 
@@ -123,12 +137,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, o *outcome) {
 		return
 	}
 
-	rc := http.NewResponseController(w)
 	if o.call == "get" {
-		if err := rc.SetWriteDeadline(time.Now().Add(BodyTimeout)); err != nil {
-			refuse(w, r, o, http.StatusInternalServerError, "internal", err)
-			return
-		}
 		s.get(w, r, o, sb.b, name)
 		return
 	}
@@ -141,12 +150,14 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, o *outcome) {
 		refuse(w, r, o, http.StatusBadRequest, "sha256-missing", nil)
 		return
 	}
-	var sum [32]byte
-	if n, err := hex.Decode(sum[:], []byte(hexSum)); err != nil || n != len(sum) || len(hexSum) != 2*len(sum) {
+	// DecodeString, not Decode into a [32]byte: Decode writes past it on a longer string.
+	raw, err := hex.DecodeString(hexSum)
+	if err != nil || len(raw) != sha256.Size {
 		refuse(w, r, o, http.StatusBadRequest, "request-invalid", errors.New("Azukari-Sha256 is not 64 hex digits"))
 		return
 	}
-	if err := rc.SetReadDeadline(time.Now().Add(BodyTimeout)); err != nil {
+	sum := [sha256.Size]byte(raw)
+	if err := http.NewResponseController(w).SetReadDeadline(time.Now().Add(BodyTimeout)); err != nil {
 		refuse(w, r, o, http.StatusInternalServerError, "internal", err)
 		return
 	}
@@ -161,7 +172,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, o *outcome) {
 		s.refuseErr(w, r, o, name, err)
 	case created:
 		o.code = http.StatusCreated
-		w.WriteHeader(o.code)
+		writeHeader(w, o.code)
 		ns := key.Namespace(k)
 		if snap, ok := strings.CutPrefix(k, ns+"/snapshots/"); ok && !strings.Contains(snap, "/") {
 			s.log.Info("", "event", "snapshot-received", "bucket", name, "namespace", ns, "snapshot", snap)
@@ -171,7 +182,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, o *outcome) {
 		}
 	default:
 		o.code = http.StatusOK
-		w.WriteHeader(o.code)
+		writeHeader(w, o.code)
 	}
 }
 
@@ -292,7 +303,7 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request, o *outcome, sb 
 	h.Set("Content-Type", "application/x-protobuf")
 	h.Set("Content-Length", strconv.Itoa(len(out)))
 	o.code = http.StatusOK
-	w.WriteHeader(o.code)
+	writeHeader(w, o.code)
 	n, _ := w.Write(out)
 	o.bytes = int64(n)
 }
@@ -309,7 +320,7 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request, o *outcome, b *buck
 	hd.Set("Content-Length", strconv.FormatUint(h.Size, 10))
 	hd.Set("Azukari-Sha256", hex.EncodeToString(h.SHA256[:]))
 	o.code = http.StatusOK
-	w.WriteHeader(o.code)
+	writeHeader(w, o.code)
 	// A failure here (client gone, deadline) can no longer change the status: bytes tells it.
 	o.bytes, _ = io.CopyN(w, body, int64(h.Size))
 }
