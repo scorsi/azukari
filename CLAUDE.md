@@ -6,8 +6,9 @@ an ADR where a real choice exists is proposed with a recommendation, never accep
 ## Conventions
 
 - One theme per ADR; never bundle unrelated decisions.
-- Every binary, package and module is named `azukari-<subproduct>`, subproduct in English.
-- `azukari-server` never contains decryption code or keys (ADR 0001).
+- Every component, package and module is named `azukari-<subproduct>`, subproduct in English;
+  the operator command line alone is plain `azukari` (local socket only).
+- `azukari-server` and `azukari` never contain decryption code or keys (ADR 0001, 0002).
 - Public repository: no host names, domains, addresses or keys of any deployment; those live
   in the deployment repository.
 - Code, comments, docs and commits in English.

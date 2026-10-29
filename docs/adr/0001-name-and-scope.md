@@ -29,12 +29,15 @@ must never be lost, and it is opaque to whoever keeps it.
 
 - Name: **azukari** (預かり, "what is kept in custody for someone"). The store keeps what nodes
   deposit, does not read it, and gives it back only to its depositor.
-- One repository. Every binary, package and module is named `azukari-<subproduct>`, the
-  subproduct in English:
-  - `azukari-server`: the store, and its local administration;
+- One repository. Every component, package and module is named `azukari-<subproduct>`, the
+  subproduct in English; the operator command alone is plain `azukari`:
+  - `azukari-server`: the store;
   - `azukari-backup`: the backup component of a node (back up, list snapshots, restore);
-  - a library shared by both (configuration, transport, protocol).
-  Each subproduct is a dedicated component; there is no general-purpose client.
+  - `azukari`: the operator command line, run on the store's host; it talks only to the
+    store's local administration socket, never over the network;
+  - a library shared by them (configuration, transport, protocol).
+  Each node-side subproduct is a dedicated component; there is no general-purpose client for
+  nodes.
 - **Push**: nodes send their own data; the store never reaches out to a node.
 - **Typed buckets**: every bucket has a type that fixes its contract; the configuration maps
   each bucket to where it is written. Moving storage elsewhere changes that mapping and the
@@ -45,7 +48,7 @@ must never be lost, and it is opaque to whoever keeps it.
   - data is encrypted by `azukari-backup` before it leaves the node; the store never holds a
     key and has no decryption code;
   - retention and deletion are done by the store alone, from the bucket configuration, or
-    by the local administration;
+    by the operator through the local administration socket;
   - the store replicates the bucket to off-site and local targets itself.
 - Other types (for example a shared storage bucket, not tied to nodes) come later, each
   with its own ADR.
@@ -55,7 +58,7 @@ must never be lost, and it is opaque to whoever keeps it.
 - S3 or any other standard object-storage protocol.
 - The live data of services (repositories, databases, caches): they need a local POSIX
   filesystem and stay on the node that runs them. azukari keeps their backups.
-- A general-purpose command line, a web UI, mounting a bucket as a filesystem.
+- A general-purpose client for nodes, a web UI, mounting a bucket as a filesystem.
 - Multi-tenancy, exposure to the public Internet.
 
 ### Boundary with oroshi

@@ -25,8 +25,8 @@ not stay resident.
 
 ## Decision
 
-Go, `CGO_ENABLED=0`, `buildGoModule`. One Go module, two commands (`cmd/azukari-server`,
-`cmd/azukari-backup`) and shared packages under `internal/` (ADR 0001).
+Go, `CGO_ENABLED=0`, `buildGoModule`. One Go module, three commands (`cmd/azukari-server`,
+`cmd/azukari-backup`, `cmd/azukari`) and shared packages under `internal/` (ADR 0001).
 
 External modules allowed:
 
@@ -51,7 +51,7 @@ From the standard library, with no module added:
 - TLS, the HTTP server and client, the local administration socket, JSON logs (a copy of
   nisshi's schema v1 Go reference, as hanko and genkan), the `/metrics` text exposition.
 
-`azukari-server` never imports the encryption package; a test checks it in the build
+`azukari-server` and `azukari` never import the encryption package; a test checks it in the build
 (`go list -deps`), so the store's inability to decrypt holds by construction (ADR 0001).
 
 Configuration is TOML, rendered by the NixOS module with `pkgs.formats.toml`. Any other
