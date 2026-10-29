@@ -17,11 +17,12 @@ buildGoModule {
       ../go.mod
       (lib.fileset.maybeMissing ../go.sum)
       (lib.fileset.fileFilter (f: f.hasExt "go") ../.)
+      ../internal/config/testdata
     ];
   };
 
   # After a go.mod change: set to lib.fakeHash and read the value from the build error.
-  vendorHash = "sha256-aF4c3loEsXDF8dQt9b6bZ9JV4nTjVfKsU0Jyb/lq63M=";
+  vendorHash = "sha256-R2hwJv0JytUJQukciuBy96C7naLNOIFzzrorispCDc4=";
 
   env.CGO_ENABLED = 0;
   ldflags = [
@@ -29,9 +30,13 @@ buildGoModule {
     "-w"
   ];
 
-  # `nix flake check` runs this phase: vet first, then the default `go test ./...`.
-  preCheck = ''
+  # `nix flake check` runs this phase. The default one tests only subPackages (the commands),
+  # never internal/ nor gen/: vet and test the whole module instead.
+  checkPhase = ''
+    runHook preCheck
     go vet ./...
+    go test ./...
+    runHook postCheck
   '';
 
   meta = {

@@ -1,0 +1,63 @@
+# want: replicas[1] local: destination "/media/removable/azukari" must be under mount_point "/media/other"
+listen = ["[::]:8443", "127.0.0.1:8443"]
+listen_metrics = "127.0.0.1:9464"
+
+trust_domain = "example.org"
+svid_file = "/run/azukari-server/svid.pem"
+key_file = "/run/azukari-server/key.pem"
+bundle_file = "/run/azukari-server/bundle.pem"
+
+[classes.standard]
+replicas = ["offsite"]
+
+[classes.critical]
+replicas = ["offsite", "local"]
+
+[[buckets]]
+name = "backup"
+type = "backup"
+class = "standard"
+path = "/srv/disk-1/azukari/backup"
+max_object_bytes = 16777216
+disk_reserve = "20GiB"
+mount_point = "/srv/disk-1"
+nodes = [
+  "spiffe://example.org/node-a/azukari-backup",
+  "spiffe://example.org/node-b/azukari-backup",
+]
+
+[buckets.retention]
+keep = "30d"
+run_at = "03:30"
+
+[[buckets]]
+name = "backup-critical"
+type = "backup"
+class = "critical"
+path = "/srv/disk-2/azukari/backup-critical"
+max_object_bytes = 16777216
+disk_reserve = "512MiB"
+mount_point = "/srv/disk-2"
+nodes = ["spiffe://example.org/node-a/azukari-backup"]
+
+[buckets.retention]
+enabled = true
+keep = "90d"
+grace = "1d12h"
+run_at = "04:00"
+
+[[replicas]]
+name = "offsite"
+kind = "ssh"
+destination = "azukari@backup.example.org:buckets"
+port = 2222
+ssh_key_file = "/run/secrets/azukari-offsite-key"
+known_hosts_file = "/etc/azukari/offsite-known-hosts"
+every = "6h"
+
+[[replicas]]
+name = "local"
+kind = "dir"
+destination = "/media/removable/azukari"
+mount_point = "/media/other"
+every = "1d"

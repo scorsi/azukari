@@ -3,16 +3,28 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
+
+	"github.com/scorsi/azukari/internal/config"
+	"github.com/scorsi/azukari/internal/logging"
 )
 
-const usage = `usage: azukari-server <command> [arguments]
+const usage = `usage: azukari-server check <config.toml>
 
-no command yet
+commands:
+  check   validate the configuration file and exit (reads no SVID, mount nor bucket)
 `
 
-// No subcommand exists yet: every invocation prints the usage and exits 2.
 func main() {
-	fmt.Fprint(os.Stderr, usage)
-	os.Exit(2)
+	if len(os.Args) != 3 || os.Args[1] != "check" {
+		fmt.Fprint(os.Stderr, usage)
+		os.Exit(2)
+	}
+	// Schema v1 lines on stderr (ADR 0009).
+	log := logging.New(os.Stderr, slog.LevelInfo)
+	if _, err := config.LoadServer(os.Args[2]); err != nil {
+		log.Error("", "event", "config-invalid", "err", err)
+		os.Exit(1)
+	}
 }
