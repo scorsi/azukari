@@ -5,7 +5,7 @@
 
 *預かり (azukari): what is kept in custody for someone, and given back only to them.*
 
-**Status:** design done (ADRs 0001–0010, milestones); M0 next.
+**Status:** M0 in progress.
 
 ## Components
 

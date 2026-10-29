@@ -1,9 +1,12 @@
 # Nix
 result
 result-*
+.direnv/
 
-# Rust
-/target
+# Go binaries built at the root (go build ./cmd/...)
+/azukari
+/azukari-server
+/azukari-backup
 
 # OS
 .DS_Store
