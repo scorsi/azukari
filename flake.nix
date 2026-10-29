@@ -163,6 +163,16 @@
                 storeKey = backupFor linux {
                   services.azukari-backup.settings.data_key_file = lib.mkForce "${builtins.storeDir}/x-data.key";
                 };
+                # One export (ADR 0021).
+                withExport = backupFor linux {
+                  services.azukari-backup.exports.db = {
+                    user = "db";
+                    command = "db-dump > \"$EXPORT_DIR/db.sql\"";
+                  };
+                };
+                ex = withExport.systemd.services.azukari-export-db;
+                exUnit = withExport.systemd.services.azukari-backup;
+                badName = backupFor linux { services.azukari-backup.exports."..".user = "db"; };
               in
               assert
                 lib.hasSuffix "/bin/azukari-backup run /etc/azukari/azukari-backup.toml" sc.ExecStart
@@ -196,6 +206,33 @@
                 && backup.users.groups ? azukari-backup;
               # No root step: the option is gone (ADR 0020).
               assert !(backup.services.azukari-backup ? preCommand);
+              # Exports: unit as the service's user, its directory, ordering and paths (ADR 0021).
+              assert
+                ex.serviceConfig.Type == "oneshot"
+                && ex.serviceConfig.User == "db"
+                && !(ex.serviceConfig ? Group)
+                && ex.environment.EXPORT_DIR == "/persist/backups/db"
+                && ex.serviceConfig.UMask == "0027"
+                && ex.serviceConfig.ProtectSystem == "strict"
+                && ex.serviceConfig.ReadWritePaths == [ "/persist/backups/db" ]
+                && lib.hasInfix "db-dump" ex.script
+                && ex.wantedBy == [ ];
+              assert
+                lib.elem "azukari-export-db.service" exUnit.requires
+                && lib.elem "azukari-export-db.service" exUnit.after
+                && backup.systemd.services.azukari-backup.requires == [ ];
+              assert lib.all (l: lib.elem l withExport.systemd.tmpfiles.rules) [
+                "d /persist/backups 0750 root azukari-backup -"
+                "d /persist/backups/db 2750 db azukari-backup -"
+                "z /persist/backups/db 2750 db azukari-backup -"
+              ];
+              assert
+                lib.sort lib.lessThan withExport.services.azukari-backup.settings.paths == [
+                  "/persist/backups/db"
+                  "/var/backup"
+                  "/var/lib/a"
+                ];
+              assert failed badName == failed backup + 1;
               pkgs.runCommand "azukari-backup-module-eval" { } ''
                 echo ${lib.escapeShellArg (builtins.unsafeDiscardStringContext (builtins.toJSON sc))} > $out
               '';
