@@ -84,13 +84,13 @@ pkgs.testers.runNixOSTest {
   };
 
   testScript = ''
-    log = "/var/log/azukari-cli.log"
+    cli_log = "/var/log/azukari-cli.log"
 
     def cli(m, args):
         """azukari-backup on m; its stderr (schema v1 lines) is kept for the validator.
         The driver runs commands under errexit and pipefail."""
         return m.succeed(
-            f"rc=0; ${bin} {args} 2>/tmp/err || rc=$?; cat /tmp/err >> {log}; cat /tmp/err >&2; exit $rc"
+            f"rc=0; ${bin} {args} 2>/tmp/err || rc=$?; cat /tmp/err >> {cli_log}; cat /tmp/err >&2; exit $rc"
         )
 
     def snapshots():
@@ -185,7 +185,7 @@ pkgs.testers.runNixOSTest {
     node_a.succeed("journalctl --sync; journalctl _SYSTEMD_UNIT=azukari-backup.service -o cat"
                    " | ${nisshi.lib.validateLogs.${system}} validate --logs")
     for m in (node_a, restorer):
-        m.succeed(f"${nisshi.lib.validateLogs.${system}} validate --logs < {log}")
+        m.succeed(f"${nisshi.lib.validateLogs.${system}} validate --logs < {cli_log}")
     ${t.validate "store"}
   '';
 }
