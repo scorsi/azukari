@@ -1,0 +1,341 @@
+package bucket
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/scorsi/azukari/internal/key"
+)
+
+var testNow = time.Date(2026, 10, 29, 12, 0, 0, 123, time.UTC)
+
+func newBucket(t *testing.T) *Bucket {
+	t.Helper()
+	mp := t.TempDir()
+	path := filepath.Join(mp, "backup")
+	if s, err := Open(path, mp, mounted); s != Created || err != nil {
+		t.Fatalf("Open = %v, %v", s, err)
+	}
+	b := New(path, 1<<20, 1000)
+	b.freeSpace = func(string) (int64, error) { return 1 << 40, nil }
+	b.now = func() time.Time { return testNow }
+	return b
+}
+
+func put(b *Bucket, k, body string) (bool, error) {
+	return b.Put(k, int64(len(body)), sha256.Sum256([]byte(body)), strings.NewReader(body))
+}
+
+// assertClean checks that objects/ holds exactly the keys given and tmp/ is empty.
+func assertClean(t *testing.T, b *Bucket, keys ...string) {
+	t.Helper()
+	var got []string
+	must(t, filepath.WalkDir(filepath.Join(b.path, "objects"), func(p string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			rel, _ := filepath.Rel(filepath.Join(b.path, "objects"), p)
+			got = append(got, filepath.ToSlash(rel))
+		}
+		return err
+	}))
+	if fmt.Sprint(got) != fmt.Sprint(keys) {
+		t.Fatalf("objects = %v, want %v", got, keys)
+	}
+	if e, err := os.ReadDir(filepath.Join(b.path, "tmp")); err != nil || len(e) != 0 {
+		t.Fatalf("tmp/ = %v, %v", e, err)
+	}
+}
+
+func TestPutCreateRetryConflict(t *testing.T) {
+	b := newBucket(t)
+	if created, err := put(b, "n/chunks/ab/x", "hello"); !created || err != nil {
+		t.Fatalf("first Put = %v, %v", created, err)
+	}
+	if created, err := put(b, "n/chunks/ab/x", "hello"); created || err != nil {
+		t.Fatalf("retry = %v, %v; want 200", created, err)
+	}
+	if _, err := put(b, "n/chunks/ab/x", "other"); !errors.Is(err, ErrExists) {
+		t.Fatalf("other bytes: %v; want ErrExists", err)
+	}
+	// A key under an object, and an object over a directory: 409, the bucket keeps serving.
+	if _, err := put(b, "n/chunks/ab/x/y", "z"); !errors.Is(err, ErrExists) {
+		t.Fatalf("under an object: %v", err)
+	}
+	if _, err := put(b, "n/chunks", "z"); !errors.Is(err, ErrExists) {
+		t.Fatalf("over a directory: %v", err)
+	}
+	if b.Err() != nil {
+		t.Fatal(b.Err())
+	}
+	assertClean(t, b, "n/chunks/ab/x")
+
+	h, body, err := b.Get("n/chunks/ab/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer body.Close()
+	data, err := io.ReadAll(body)
+	if err != nil || string(data) != "hello" {
+		t.Fatalf("body %q, %v", data, err)
+	}
+	if want := (Header{Size: 5, SHA256: sha256.Sum256([]byte("hello")), ReceiveTime: testNow.UnixNano()}); h != want {
+		t.Fatalf("header %+v, want %+v", h, want)
+	}
+	for _, k := range []string{"n/absent", "n/chunks", "n/chunks/ab/x/y"} {
+		if _, _, err := b.Get(k); !errors.Is(err, ErrNotFound) {
+			t.Errorf("Get(%s) = %v", k, err)
+		}
+	}
+	if _, _, err := b.Get("../x"); !errors.Is(err, key.ErrInvalid) {
+		t.Errorf("Get(../x) = %v", err)
+	}
+}
+
+type cutReader struct{ r io.Reader }
+
+func (c cutReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	if err == io.EOF {
+		err = io.ErrUnexpectedEOF
+	}
+	return n, err
+}
+
+func TestPutRefusalsLeaveNothing(t *testing.T) {
+	b := newBucket(t)
+	sum := sha256.Sum256([]byte("hello"))
+	for name, c := range map[string]struct {
+		size int64
+		sum  [32]byte
+		body io.Reader
+		want error
+	}{
+		"hash":      {5, sha256.Sum256([]byte("world")), strings.NewReader("hello"), ErrSHA256Mismatch},
+		"short":     {6, sum, strings.NewReader("hello"), ErrSizeMismatch},
+		"long":      {4, sum, strings.NewReader("hello"), ErrSizeMismatch},
+		"cut":       {10, sum, cutReader{strings.NewReader("hello")}, io.ErrUnexpectedEOF},
+		"too large": {1<<20 + 1, sum, strings.NewReader("hello"), ErrTooLarge},
+		"negative":  {-1, sum, strings.NewReader(""), ErrTooLarge},
+		"bad key":   {5, sum, strings.NewReader("hello"), key.ErrInvalid},
+	} {
+		k := "n/x"
+		if name == "bad key" {
+			k = "n/../x"
+		}
+		if created, err := b.Put(k, c.size, c.sum, c.body); created || !errors.Is(err, c.want) {
+			t.Errorf("%s: %v, %v; want %v", name, created, err, c.want)
+		}
+	}
+	if b.Err() != nil {
+		t.Fatal(b.Err())
+	}
+	assertClean(t, b)
+}
+
+func TestPutConcurrent(t *testing.T) {
+	b := newBucket(t)
+	var wg sync.WaitGroup
+	results := make(chan bool, 16)
+	for range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			created, err := put(b, "n/k", "same bytes")
+			if err != nil {
+				t.Error(err)
+			}
+			results <- created
+		}()
+	}
+	wg.Wait()
+	close(results)
+	n := 0
+	for c := range results {
+		if c {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%d Puts created the object, want 1", n)
+	}
+	assertClean(t, b, "n/k")
+}
+
+func TestPutDiskReserve(t *testing.T) {
+	b := newBucket(t)
+	free := int64(1000 + HeaderSize + 100) // reserve 1000
+	b.freeSpace = func(string) (int64, error) { return free, nil }
+	if _, err := b.Put("n/a", 101, [32]byte{}, strings.NewReader("")); !errors.Is(err, ErrDiskReserve) {
+		t.Fatalf("over the reserve: %v", err)
+	}
+	if _, err := put(b, "n/a", strings.Repeat("x", 100)); err != nil {
+		t.Fatalf("at the reserve: %v", err)
+	}
+	assertClean(t, b, "n/a")
+	if n, err := FreeSpace(b.path); n <= 0 || err != nil {
+		t.Fatalf("FreeSpace = %d, %v", n, err)
+	}
+}
+
+func TestUnavailable(t *testing.T) {
+	b := newBucket(t)
+	must(t, os.RemoveAll(filepath.Join(b.path, "tmp"))) // the next write fails
+	if _, err := put(b, "n/a", "x"); !errors.Is(err, ErrBecameUnavailable) {
+		t.Fatalf("Put = %v, want ErrBecameUnavailable", err)
+	}
+	if b.Err() == nil {
+		t.Fatal("Err() = nil after a write error")
+	}
+	must(t, os.Mkdir(filepath.Join(b.path, "tmp"), 0o700)) // stays unavailable until restart
+	_, err := put(b, "n/a", "x")
+	if !errors.Is(err, ErrUnavailable) || errors.Is(err, ErrBecameUnavailable) {
+		t.Fatalf("Put = %v", err)
+	}
+	if _, _, err := b.Get("n/a"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Get = %v", err)
+	}
+	if _, err := b.Missing([]string{"n/a"}); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Missing = %v", err)
+	}
+	if _, _, err := b.List("", "", 1); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("List = %v", err)
+	}
+}
+
+func TestMissing(t *testing.T) {
+	b := newBucket(t)
+	for _, k := range []string{"n/a", "n/c/d"} {
+		if _, err := put(b, k, k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := b.Missing([]string{"n/a", "n/b", "n/c", "n/c/d", "n/a/x"})
+	if err != nil || fmt.Sprint(got) != "[n/b n/c n/a/x]" {
+		t.Fatalf("Missing = %v, %v", got, err)
+	}
+	if _, err := b.Missing([]string{"n/a", "/x"}); !errors.Is(err, key.ErrInvalid) {
+		t.Fatalf("invalid key: %v", err)
+	}
+}
+
+func TestList(t *testing.T) {
+	b := newBucket(t)
+	// "a.c" < "a/b" < "a0" in byte order: directory walk order must not leak through.
+	keys := []string{"a/b", "a.c", "a0", "a/b.d/e", "a/b-", "b/x/y/z", "b/x0", "c"}
+	for _, k := range keys {
+		if _, err := put(b, k, k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all := []string{"a-", "a.c", "a/b", "a/b-", "a/b.d/e", "a0", "b/x/y/z", "b/x0", "c"}
+	if _, err := put(b, "a-", "a-"); err != nil {
+		t.Fatal(err)
+	}
+	listKeys := func(prefix, after string, limit int) (string, string) {
+		t.Helper()
+		objs, next, err := b.List(prefix, after, limit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ks []string
+		for _, o := range objs {
+			if o.Size != uint64(len(o.Key)) || o.SHA256 != sha256.Sum256([]byte(o.Key)) {
+				t.Fatalf("%s: size %d sha %x", o.Key, o.Size, o.SHA256)
+			}
+			ks = append(ks, o.Key)
+		}
+		return strings.Join(ks, " "), next
+	}
+	if got, next := listKeys("", "", 100); got != strings.Join(all, " ") || next != "" {
+		t.Fatalf("all: %q next %q", got, next)
+	}
+	// Paginate by 2 and get every key once, in order.
+	var pages []string
+	after := ""
+	for {
+		got, next := listKeys("", after, 2)
+		pages = append(pages, got)
+		if next == "" {
+			break
+		}
+		after = next
+	}
+	if strings.Join(pages, " ") != strings.Join(all, " ") {
+		t.Fatalf("pages %q", pages)
+	}
+	for _, c := range []struct{ prefix, after, want string }{
+		{"a/", "", "a/b a/b- a/b.d/e"},
+		{"a/b", "", "a/b a/b- a/b.d/e"},
+		{"a/b.", "", "a/b.d/e"},
+		{"a", "a/b-", "a/b.d/e a0"},
+		{"b/x", "", "b/x/y/z b/x0"},
+		{"b/x/", "b/x/y/z", ""},
+		{"", "b", "b/x/y/z b/x0 c"},
+		{"zz", "", ""},
+	} {
+		if got, next := listKeys(c.prefix, c.after, 100); got != c.want || next != "" {
+			t.Errorf("List(%q, %q) = %q, next %q; want %q", c.prefix, c.after, got, next, c.want)
+		}
+	}
+	if got, next := listKeys("a", "", 3); got != "a- a.c a/b" || next != "a/b" {
+		t.Errorf("limit: %q next %q", got, next)
+	}
+	// An exact page leaves next empty.
+	if _, next := listKeys("a/", "", 3); next != "" {
+		t.Errorf("exact page: next %q", next)
+	}
+	if _, _, err := b.List("", "", 0); err == nil {
+		t.Error("limit 0 accepted")
+	}
+}
+
+func TestLastSnapshot(t *testing.T) {
+	b := newBucket(t)
+	if _, ok, err := b.LastSnapshot("n"); ok || err != nil {
+		t.Fatalf("empty: %v, %v", ok, err)
+	}
+	for i, k := range []string{"n/snapshots/s1", "n/snapshots/s2", "n/snapshots/s0", "n/refs/s9", "m/snapshots/s9"} {
+		at := testNow.Add(time.Duration(i) * time.Hour)
+		if k == "n/snapshots/s0" {
+			at = testNow.Add(-time.Hour)
+		}
+		if k[0] == 'm' || k == "n/refs/s9" {
+			at = testNow.Add(24 * time.Hour)
+		}
+		b.now = func() time.Time { return at }
+		if _, err := put(b, k, k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, ok, err := b.LastSnapshot("n")
+	if err != nil || !ok || !got.Equal(testNow.Add(time.Hour)) {
+		t.Fatalf("LastSnapshot = %v, %v, %v", got, ok, err)
+	}
+	if _, _, err := b.LastSnapshot("n/snapshots"); !errors.Is(err, key.ErrInvalid) {
+		t.Fatalf("bad namespace: %v", err)
+	}
+}
+
+// The object file is the header then the body, readable offline (ADR 0004).
+func TestObjectFileLayout(t *testing.T) {
+	b := newBucket(t)
+	if _, err := put(b, "n/o", "hello"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(b.path, "objects", "n", "o"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := append(Header{Size: 5, SHA256: sha256.Sum256([]byte("hello")), ReceiveTime: testNow.UnixNano()}.Encode(), "hello"...)
+	if !bytes.Equal(data, want) {
+		t.Fatalf("file %x\nwant %x", data, want)
+	}
+}
