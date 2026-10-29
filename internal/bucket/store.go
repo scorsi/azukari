@@ -1,8 +1,10 @@
 package bucket
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -28,6 +31,8 @@ var (
 	ErrExists         = errors.New("object exists")            // 409 object-exists
 	ErrNotFound       = errors.New("object unknown")           // 404 object-unknown
 	ErrUnavailable    = errors.New("bucket unavailable")       // 503 bucket-unavailable
+	ErrRefsInvalid    = errors.New("refs invalid")             // 400 refs-invalid
+	ErrRefsIncomplete = errors.New("refs incomplete")          // 409 refs-incomplete
 	// ErrBecameUnavailable is returned once, by the call whose write or fsync error made the
 	// bucket unavailable: the caller logs bucket-unavailable then. It also matches ErrUnavailable.
 	ErrBecameUnavailable = fmt.Errorf("%w now", ErrUnavailable)
@@ -41,6 +46,16 @@ type Bucket struct {
 	freeSpace func(dir string) (int64, error)
 	now       func() time.Time
 	failed    atomic.Pointer[error]
+	locks     sync.Map // namespace -> *sync.Mutex
+}
+
+// LockNamespace takes namespace's lock and returns its unlock (ADR 0007): a refs Put holds
+// it from its existence check through its link, and pruning holds it for its run.
+func (b *Bucket) LockNamespace(namespace string) (unlock func()) {
+	m, _ := b.locks.LoadOrStore(namespace, new(sync.Mutex))
+	mu := m.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 // New returns the bucket at path, opened by Open, with its max_object_bytes and disk_reserve.
@@ -102,7 +117,8 @@ func (e *errWriter) Write(p []byte) (int, error) {
 // Put creates key from body, which must be size bytes hashing to sum (ADR 0004's write
 // path). created is true for a new object (201) and false when the key already holds the
 // same bytes (200); other bytes give ErrExists (409). A refused or cut body leaves nothing
-// under objects/, and an error reading body is returned as is.
+// under objects/, and an error reading body is returned as is. A <node>/refs/... key must
+// hold sorted, distinct chunk ids naming chunks present (ErrRefsInvalid, ErrRefsIncomplete).
 func (b *Bucket) Put(k string, size int64, sum [32]byte, body io.Reader) (created bool, err error) {
 	if err := b.check(); err != nil {
 		return false, err
@@ -152,6 +168,13 @@ func (b *Bucket) Put(k string, size int64, sum [32]byte, body io.Reader) (create
 		return false, b.fail(err)
 	}
 
+	if ns := key.Namespace(k); strings.HasPrefix(k, ns+"/refs/") {
+		defer b.LockNamespace(ns)()
+		if err := b.checkRefs(ns, f.Name(), size); err != nil {
+			return false, err
+		}
+	}
+
 	dst := b.objectPath(k)
 	parent := filepath.Dir(dst)
 	if err := MkdirAllSync(parent); errors.Is(err, syscall.ENOTDIR) {
@@ -183,6 +206,44 @@ func (b *Bucket) Put(k string, size int64, sum [32]byte, body io.Reader) (create
 		return false, b.fail(err)
 	}
 	return false, nil
+}
+
+// checkRefs reads the refs body written at tmp (ADR 0007): size/32 chunk ids in strictly
+// increasing order, else ErrRefsInvalid; each <ns>/chunks/<2 hex>/<64 hex> present, else
+// ErrRefsIncomplete. The caller holds namespace's lock.
+func (b *Bucket) checkRefs(ns, tmp string, size int64) error {
+	if size%sha256.Size != 0 {
+		return fmt.Errorf("%w: %d bytes is not a multiple of 32", ErrRefsInvalid, size)
+	}
+	f, err := os.Open(tmp)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	r := bufio.NewReader(io.NewSectionReader(f, HeaderSize, size))
+	var prev, id [sha256.Size]byte
+	var incomplete error // reported only once the whole list is known valid
+	for i := int64(0); i < size/sha256.Size; i++ {
+		if _, err := io.ReadFull(r, id[:]); err != nil {
+			return err
+		}
+		if i > 0 && bytes.Compare(prev[:], id[:]) >= 0 {
+			return fmt.Errorf("%w: id %d is not above the previous one", ErrRefsInvalid, i)
+		}
+		prev = id
+		if incomplete != nil {
+			continue
+		}
+		h := hex.EncodeToString(id[:])
+		fi, err := os.Stat(b.objectPath(ns + "/chunks/" + h[:2] + "/" + h))
+		if err != nil && !errors.Is(notFound(err), ErrNotFound) {
+			return err
+		}
+		if err != nil || !fi.Mode().IsRegular() {
+			incomplete = fmt.Errorf("%w: chunk %s absent", ErrRefsIncomplete, h)
+		}
+	}
+	return incomplete
 }
 
 // readHeader reads an object's header; a missing key, or a directory, is ErrNotFound.

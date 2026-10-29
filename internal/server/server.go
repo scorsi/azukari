@@ -43,6 +43,10 @@ type Server struct {
 	src     *svid.Source
 	buckets map[string]*served
 	granted map[string]bool // IDs in some bucket's nodes: any other ID gets 403 on every request
+	// OnSnapshot, when set before Serve, is called, from concurrent requests, after each new
+	// snapshot root is stored:
+	// the hook for azukari_last_snapshot_timestamp_seconds (ADR 0009).
+	OnSnapshot func(bucket, namespace string, at time.Time)
 }
 
 type served struct {

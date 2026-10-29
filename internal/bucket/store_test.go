@@ -311,7 +311,11 @@ func TestLastSnapshot(t *testing.T) {
 			at = testNow.Add(24 * time.Hour)
 		}
 		b.now = func() time.Time { return at }
-		if _, err := put(b, k, k); err != nil {
+		body := k
+		if k == "n/refs/s9" {
+			body = "" // a refs body is a list of chunk ids; the empty list is valid
+		}
+		if _, err := put(b, k, body); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -337,5 +341,66 @@ func TestObjectFileLayout(t *testing.T) {
 	want := append(Header{Size: 5, SHA256: sha256.Sum256([]byte("hello")), ReceiveTime: testNow.UnixNano()}.Encode(), "hello"...)
 	if !bytes.Equal(data, want) {
 		t.Fatalf("file %x\nwant %x", data, want)
+	}
+}
+
+func chunkKey(id [32]byte) string {
+	h := fmt.Sprintf("%x", id)
+	return "n/chunks/" + h[:2] + "/" + h
+}
+
+func TestRefs(t *testing.T) {
+	b := newBucket(t)
+	lo, hi := [32]byte{1}, [32]byte{2}
+	refs := string(lo[:]) + string(hi[:])
+	if _, err := put(b, chunkKey(lo), "lo"); err != nil {
+		t.Fatal(err)
+	}
+	if created, err := put(b, "n/refs/s", refs); created || !errors.Is(err, ErrRefsIncomplete) {
+		t.Fatalf("incomplete: %v, %v", created, err)
+	}
+	// Malformed lists are refused as such, before any missing chunk (hi is absent).
+	for name, body := range map[string]string{
+		"unsorted":  string(hi[:]) + string(lo[:]),
+		"duplicate": string(lo[:]) + string(lo[:]),
+		"partial":   refs + "x",
+	} {
+		if _, err := put(b, "n/refs/s", body); !errors.Is(err, ErrRefsInvalid) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	assertClean(t, b, chunkKey(lo))
+	if _, err := put(b, chunkKey(hi), "hi"); err != nil {
+		t.Fatal(err)
+	}
+	if created, err := put(b, "n/refs/s", refs); !created || err != nil {
+		t.Fatalf("complete: %v, %v", created, err)
+	}
+	// Other namespaces' chunks do not count, and other keys are not refs lists.
+	if _, err := put(b, "m/refs/s", refs); !errors.Is(err, ErrRefsIncomplete) {
+		t.Fatalf("other namespace: %v", err)
+	}
+	if _, err := put(b, "n/snapshots/s", "x"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A refs Put waits for its namespace's lock, which pruning holds for its run (ADR 0007).
+func TestRefsWaitsForLock(t *testing.T) {
+	b := newBucket(t)
+	unlock := b.LockNamespace("n")
+	done := make(chan error)
+	go func() { _, err := put(b, "n/refs/s", ""); done <- err }()
+	if _, err := put(b, "m/refs/s", ""); err != nil { // another namespace is not held
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("Put finished under the lock: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	unlock()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }

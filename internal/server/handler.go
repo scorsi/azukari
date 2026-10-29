@@ -161,6 +161,13 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, o *outcome) {
 	case created:
 		o.code = http.StatusCreated
 		w.WriteHeader(o.code)
+		ns := key.Namespace(k)
+		if snap, ok := strings.CutPrefix(k, ns+"/snapshots/"); ok && !strings.Contains(snap, "/") {
+			s.log.Info("", "event", "snapshot-received", "bucket", name, "namespace", ns, "snapshot", snap)
+			if s.OnSnapshot != nil {
+				s.OnSnapshot(name, ns, time.Now()) // the header's receive time, within the request's duration
+			}
+		}
 	default:
 		o.code = http.StatusOK
 		w.WriteHeader(o.code)
@@ -324,6 +331,10 @@ func (s *Server) refuseErr(w http.ResponseWriter, r *http.Request, o *outcome, n
 		refuse(w, r, o, http.StatusBadRequest, "sha256-mismatch", err)
 	case errors.Is(err, bucket.ErrSizeMismatch):
 		refuse(w, r, o, http.StatusBadRequest, "request-invalid", err)
+	case errors.Is(err, bucket.ErrRefsInvalid):
+		refuse(w, r, o, http.StatusBadRequest, "refs-invalid", err)
+	case errors.Is(err, bucket.ErrRefsIncomplete):
+		refuse(w, r, o, http.StatusConflict, "refs-incomplete", err)
 	case errors.Is(err, bucket.ErrExists):
 		refuse(w, r, o, http.StatusConflict, "object-exists", err)
 	case errors.Is(err, bucket.ErrNotFound):

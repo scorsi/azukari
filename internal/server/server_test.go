@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -68,9 +69,10 @@ func (s *syncBuffer) lines(t *testing.T) []map[string]any {
 }
 
 type env struct {
-	ca   *testca.CA
-	addr string
-	logs *syncBuffer
+	ca        *testca.CA
+	addr      string
+	logs      *syncBuffer
+	snapshots *syncBuffer // one "<bucket> <namespace>" line per OnSnapshot call
 }
 
 // start serves three buckets on loopback: "backup" (max 1024 bytes), "down" (its mount is
@@ -98,6 +100,8 @@ func start(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
+	snapshots := &syncBuffer{}
+	s.OnSnapshot = func(bucket, namespace string, _ time.Time) { fmt.Fprintln(snapshots, bucket, namespace) }
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -114,7 +118,7 @@ func start(t *testing.T) *env {
 	for !strings.Contains(logs.String(), `"server-started"`) {
 		time.Sleep(time.Millisecond)
 	}
-	return &env{ca: ca, addr: ln.Addr().String(), logs: logs}
+	return &env{ca: ca, addr: ln.Addr().String(), logs: logs, snapshots: snapshots}
 }
 
 func (e *env) tlsConfig(t *testing.T, id string, alpn ...string) *tls.Config {
@@ -584,5 +588,50 @@ func TestControlRefusals(t *testing.T) {
 				t.Errorf("refused control line lacks count: %v", l)
 			}
 		}
+	}
+}
+
+func TestRefsAndSnapshot(t *testing.T) {
+	e := start(t)
+	c := e.client(t, nodeA, true)
+	put := func(k string, data []byte) answer {
+		return e.do(t, c, "PUT", "/v1/b/backup/o/node-a/"+k, bytes.NewReader(data), hexSum(data))
+	}
+	id := sha256.Sum256([]byte("chunk"))
+	h := hex.EncodeToString(id[:])
+	other := [32]byte{}
+	for name, body := range map[string][]byte{
+		"unsorted":  append(id[:], other[:]...),
+		"duplicate": append(id[:], id[:]...),
+	} {
+		if a := put("refs/s", body); a.code != http.StatusBadRequest || a.reason != "refs-invalid" {
+			t.Errorf("%s: %d %q", name, a.code, a.reason)
+		}
+	}
+	if a := put("refs/s", id[:]); a.code != http.StatusConflict || a.reason != "refs-incomplete" {
+		t.Fatalf("incomplete: %d %q", a.code, a.reason)
+	}
+	if a := put("chunks/"+h[:2]+"/"+h, []byte("chunk")); a.code != http.StatusCreated {
+		t.Fatalf("chunk: %d %q", a.code, a.reason)
+	}
+	if a := put("refs/s", id[:]); a.code != http.StatusCreated {
+		t.Fatalf("complete: %d %q", a.code, a.reason)
+	}
+	for range 2 { // the retry (200) is not a second snapshot
+		if a := put("snapshots/s", []byte("root")); a.code >= 300 {
+			t.Fatalf("snapshot: %d %q", a.code, a.reason)
+		}
+	}
+	var got []map[string]any
+	for _, l := range e.logs.lines(t) {
+		if l["event"] == "snapshot-received" {
+			got = append(got, l)
+		}
+	}
+	if len(got) != 1 || got[0]["bucket"] != "backup" || got[0]["namespace"] != "node-a" || got[0]["snapshot"] != "s" || got[0]["level"] != "info" {
+		t.Fatalf("snapshot-received lines %v", got)
+	}
+	if s := e.snapshots.String(); s != "backup node-a\n" {
+		t.Fatalf("OnSnapshot calls %q", s)
 	}
 }
