@@ -24,15 +24,19 @@ type Server struct {
 	// Listen holds the mTLS listeners, host:port (ADR 0003, 0005).
 	Listen []string `toml:"listen"`
 	// ListenMetrics is the loopback /metrics listener, the only unauthenticated port (ADR 0005, 0009).
-	ListenMetrics string `toml:"listen_metrics"`
-	// SVID files and trust domain (ADR 0005).
-	TrustDomain string           `toml:"trust_domain"`
-	SVIDFile    string           `toml:"svid_file"`
-	KeyFile     string           `toml:"key_file"`
-	BundleFile  string           `toml:"bundle_file"`
-	Buckets     []Bucket         `toml:"buckets"`
-	Classes     map[string]Class `toml:"classes"`
-	Replicas    []Replica        `toml:"replicas"`
+	ListenMetrics string           `toml:"listen_metrics"`
+	TLS           TLS              `toml:"tls"`
+	Buckets       []Bucket         `toml:"buckets"`
+	Classes       map[string]Class `toml:"classes"`
+	Replicas      []Replica        `toml:"replicas"`
+}
+
+// TLS is the [tls] table of both sides: the SVID files and the trust domain (ADR 0005, 0011).
+type TLS struct {
+	TrustDomain string `toml:"trust_domain"`
+	SVIDFile    string `toml:"svid_file"`
+	KeyFile     string `toml:"key_file"`
+	BundleFile  string `toml:"bundle_file"`
 }
 
 // Bucket is one [[buckets]] table (ADR 0004, 0005, 0007, 0008).
@@ -148,14 +152,7 @@ func (c *Server) validate() error {
 	if !validListen(c.ListenMetrics, true) {
 		add("listen_metrics: %q must be a loopback <ip>:<port>, port 1..65535", c.ListenMetrics)
 	}
-	if !trustDomainRE.MatchString(c.TrustDomain) {
-		add("trust_domain: %q must be lowercase letters, digits, '.', '-' or '_'", c.TrustDomain)
-	}
-	for _, f := range []struct{ key, v string }{{"svid_file", c.SVIDFile}, {"key_file", c.KeyFile}, {"bundle_file", c.BundleFile}} {
-		if !cleanAbsolute(f.v) {
-			add("%s: %q must be a clean absolute path", f.key, f.v)
-		}
-	}
+	c.TLS.validate(add)
 
 	replicas := map[string]bool{}
 	for i := range c.Replicas {
@@ -205,7 +202,7 @@ func (c *Server) validate() error {
 			at += " " + b.Name
 		}
 		buckets[b.Name] = true
-		b.validate(at, c.TrustDomain, c.Classes, add)
+		b.validate(at, c.TLS.TrustDomain, c.Classes, add)
 		// A bucket's directory is its whole truth (ADR 0004): two buckets never share one.
 		for _, o := range c.Buckets[:i] {
 			if cleanAbsolute(b.Path) && cleanAbsolute(o.Path) && (under(b.Path, o.Path) || under(o.Path, b.Path) || b.Path == o.Path) {
@@ -214,6 +211,17 @@ func (c *Server) validate() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func (t *TLS) validate(add func(string, ...any)) {
+	if !trustDomainRE.MatchString(t.TrustDomain) {
+		add("tls.trust_domain: %q must be lowercase letters, digits, '.', '-' or '_'", t.TrustDomain)
+	}
+	for _, f := range []struct{ key, v string }{{"svid_file", t.SVIDFile}, {"key_file", t.KeyFile}, {"bundle_file", t.BundleFile}} {
+		if !cleanAbsolute(f.v) {
+			add("tls.%s: %q must be a clean absolute path", f.key, f.v)
+		}
+	}
 }
 
 func (b *Bucket) validate(at, trustDomain string, classes map[string]Class, add func(string, ...any)) {

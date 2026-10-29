@@ -13,7 +13,7 @@ func TestServerValid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Listen) != 2 || c.TrustDomain != "example.org" || len(c.Buckets) != 2 || len(c.Classes) != 2 || len(c.Replicas) != 2 {
+	if len(c.Listen) != 2 || c.TLS != (TLS{"example.org", "/run/azukari-server/svid.pem", "/run/azukari-server/key.pem", "/run/azukari-server/bundle.pem"}) || len(c.Buckets) != 2 || len(c.Classes) != 2 || len(c.Replicas) != 2 {
 		t.Fatalf("unexpected decode: %+v", c)
 	}
 	b := c.Buckets[0]

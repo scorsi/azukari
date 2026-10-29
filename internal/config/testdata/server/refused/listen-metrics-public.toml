@@ -2,6 +2,7 @@
 listen = ["[::]:8443", "127.0.0.1:8443"]
 listen_metrics = "[::]:9464"
 
+[tls]
 trust_domain = "example.org"
 svid_file = "/run/azukari-server/svid.pem"
 key_file = "/run/azukari-server/key.pem"

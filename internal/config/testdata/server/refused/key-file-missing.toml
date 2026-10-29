@@ -1,7 +1,8 @@
-# want: key_file: "" must be a clean absolute path
+# want: tls.key_file: "" must be a clean absolute path
 listen = ["[::]:8443", "127.0.0.1:8443"]
 listen_metrics = "127.0.0.1:9464"
 
+[tls]
 trust_domain = "example.org"
 svid_file = "/run/azukari-server/svid.pem"
 bundle_file = "/run/azukari-server/bundle.pem"

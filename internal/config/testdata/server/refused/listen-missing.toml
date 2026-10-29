@@ -1,6 +1,7 @@
 # want: listen: at least one address required
 listen_metrics = "127.0.0.1:9464"
 
+[tls]
 trust_domain = "example.org"
 svid_file = "/run/azukari-server/svid.pem"
 key_file = "/run/azukari-server/key.pem"
