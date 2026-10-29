@@ -58,6 +58,18 @@ func TestOpenCreates(t *testing.T) {
 	}
 }
 
+// A creation interrupted after FORMAT: Open finishes the layout and serves the bucket.
+func TestOpenFormatOnly(t *testing.T) {
+	mp := t.TempDir()
+	path := filepath.Join(mp, "backup")
+	must(t, os.Mkdir(path, 0o700))
+	must(t, os.WriteFile(filepath.Join(path, "FORMAT"), []byte("1\n"), 0o600))
+	if s, err := Open(path, mp, notMounted); s != Available || err != nil {
+		t.Fatalf("Open = %v, %v", s, err)
+	}
+	checkLayout(t, path)
+}
+
 func TestOpenUnavailable(t *testing.T) {
 	type tc struct {
 		setup   func(t *testing.T, mp string) (path, mountPoint string)
@@ -83,6 +95,13 @@ func TestOpenUnavailable(t *testing.T) {
 		"files without FORMAT": {func(t *testing.T, mp string) (string, string) {
 			p := filepath.Join(mp, "backup")
 			must(t, os.MkdirAll(filepath.Join(p, "objects"), 0o700))
+			return p, mp
+		}, mounted, "never adopted"},
+		// The state an older build's interrupted creation left (subdirectories, no FORMAT).
+		"subdirs without FORMAT": {func(t *testing.T, mp string) (string, string) {
+			p := filepath.Join(mp, "backup")
+			must(t, os.MkdirAll(filepath.Join(p, "objects"), 0o700))
+			must(t, os.Mkdir(filepath.Join(p, "tmp"), 0o700))
 			return p, mp
 		}, mounted, "never adopted"},
 		"bad FORMAT": {func(t *testing.T, mp string) (string, string) {

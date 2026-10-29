@@ -37,6 +37,10 @@ func (s State) String() string {
 func Open(path, mountPoint string, isMount func(string) (bool, error)) (State, error) {
 	switch data, err := os.ReadFile(filepath.Join(path, "FORMAT")); {
 	case err == nil && string(data) == formatContent:
+		// A creation interrupted after FORMAT may have left objects/ or tmp/ missing.
+		if err := makeSubdirs(path); err != nil {
+			return Unavailable, err
+		}
 		if err := emptyDir(filepath.Join(path, "tmp")); err != nil {
 			return Unavailable, err
 		}
@@ -111,16 +115,12 @@ func strictlyUnder(p, dir string) bool {
 	return p != dir && strings.HasPrefix(p, strings.TrimSuffix(dir, "/")+"/")
 }
 
-// create makes path (and its missing parents), objects/, tmp/, then FORMAT last, each
-// fsynced in its parent directory.
+// create makes path (and its missing parents), FORMAT first, then objects/ and tmp/, each
+// fsynced in its parent directory. FORMAT first: a crash midway leaves a bucket Open finishes,
+// never a non-empty directory without FORMAT, which would never be adopted.
 func create(path string) error {
 	if err := MkdirAllSync(path); err != nil {
 		return err
-	}
-	for _, d := range []string{"objects", "tmp"} {
-		if err := MkdirAllSync(filepath.Join(path, d)); err != nil {
-			return err
-		}
 	}
 	f, err := os.OpenFile(filepath.Join(path, "FORMAT"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
@@ -133,10 +133,23 @@ func create(path string) error {
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
+	if err == nil {
+		err = syncDir(path)
+	}
 	if err != nil {
 		return err
 	}
-	return syncDir(path)
+	return makeSubdirs(path)
+}
+
+// makeSubdirs creates objects/ and tmp/ if missing, each fsynced in path.
+func makeSubdirs(path string) error {
+	for _, d := range []string{"objects", "tmp"} {
+		if err := MkdirAllSync(filepath.Join(path, d)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // MkdirAllSync creates dir and its missing parents, fsyncing each new directory's parent.
