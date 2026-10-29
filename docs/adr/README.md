@@ -10,3 +10,4 @@ Decision / Consequences. A decision is changed by a new ADR that supersedes the 
 | [0003](0003-protocol.md) | Protocol |
 | [0004](0004-buckets-and-placement.md) | Buckets, types and placement on disk |
 | [0005](0005-identity-and-rights.md) | Identity and rights |
+| [0006](0006-backup-format.md) | Backup format |
