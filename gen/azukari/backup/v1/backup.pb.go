@@ -79,16 +79,18 @@ func (Entry_Type) EnumDescriptor() ([]byte, []int) {
 // One record of a snapshot's metadata stream: length-delimited, in path order.
 type Entry struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Relative to the configured path it was found under.
-	Path    string     `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
+	// The absolute path without its leading "/" ("var/lib/a/config"): entries of several
+	// configured paths never collide and sort in one path order. Raw bytes: a Unix name is any
+	// non-NUL byte sequence, not necessarily UTF-8.
+	Path    []byte     `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
 	Type    Entry_Type `protobuf:"varint,2,opt,name=type,proto3,enum=azukari.backup.v1.Entry_Type" json:"type,omitempty"`
 	Mode    uint32     `protobuf:"varint,3,opt,name=mode,proto3" json:"mode,omitempty"`
 	Uid     uint32     `protobuf:"varint,4,opt,name=uid,proto3" json:"uid,omitempty"`
 	Gid     uint32     `protobuf:"varint,5,opt,name=gid,proto3" json:"gid,omitempty"`
 	MtimeNs int64      `protobuf:"varint,6,opt,name=mtime_ns,json=mtimeNs,proto3" json:"mtime_ns,omitempty"`
 	Size    uint64     `protobuf:"varint,7,opt,name=size,proto3" json:"size,omitempty"`
-	// TYPE_SYMLINK only.
-	SymlinkTarget string `protobuf:"bytes,8,opt,name=symlink_target,json=symlinkTarget,proto3" json:"symlink_target,omitempty"`
+	// TYPE_SYMLINK only, raw bytes as read by readlink.
+	SymlinkTarget []byte `protobuf:"bytes,8,opt,name=symlink_target,json=symlinkTarget,proto3" json:"symlink_target,omitempty"`
 	// TYPE_FILE only: its chunk identifiers in order, 32 bytes each.
 	Chunks        [][]byte `protobuf:"bytes,9,rep,name=chunks,proto3" json:"chunks,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -125,11 +127,11 @@ func (*Entry) Descriptor() ([]byte, []int) {
 	return file_azukari_backup_v1_backup_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *Entry) GetPath() string {
+func (x *Entry) GetPath() []byte {
 	if x != nil {
 		return x.Path
 	}
-	return ""
+	return nil
 }
 
 func (x *Entry) GetType() Entry_Type {
@@ -174,11 +176,11 @@ func (x *Entry) GetSize() uint64 {
 	return 0
 }
 
-func (x *Entry) GetSymlinkTarget() string {
+func (x *Entry) GetSymlinkTarget() []byte {
 	if x != nil {
 		return x.SymlinkTarget
 	}
-	return ""
+	return nil
 }
 
 func (x *Entry) GetChunks() [][]byte {
@@ -194,7 +196,8 @@ type Root struct {
 	Format      uint32                 `protobuf:"varint,1,opt,name=format,proto3" json:"format,omitempty"`
 	StartTimeNs int64                  `protobuf:"varint,2,opt,name=start_time_ns,json=startTimeNs,proto3" json:"start_time_ns,omitempty"`
 	EndTimeNs   int64                  `protobuf:"varint,3,opt,name=end_time_ns,json=endTimeNs,proto3" json:"end_time_ns,omitempty"`
-	// The configured paths, as given in the configuration.
+	// The configured paths, as given in the configuration. string: they come from TOML, whose
+	// strings are UTF-8.
 	Paths []string `protobuf:"bytes,4,rep,name=paths,proto3" json:"paths,omitempty"`
 	// Chunk identifiers of the metadata stream, in order, 32 bytes each.
 	MetadataChunks [][]byte `protobuf:"bytes,5,rep,name=metadata_chunks,json=metadataChunks,proto3" json:"metadata_chunks,omitempty"`
@@ -349,14 +352,14 @@ const file_azukari_backup_v1_backup_proto_rawDesc = "" +
 	"\n" +
 	"\x1eazukari/backup/v1/backup.proto\x12\x11azukari.backup.v1\"\xc7\x02\n" +
 	"\x05Entry\x12\x12\n" +
-	"\x04path\x18\x01 \x01(\tR\x04path\x121\n" +
+	"\x04path\x18\x01 \x01(\fR\x04path\x121\n" +
 	"\x04type\x18\x02 \x01(\x0e2\x1d.azukari.backup.v1.Entry.TypeR\x04type\x12\x12\n" +
 	"\x04mode\x18\x03 \x01(\rR\x04mode\x12\x10\n" +
 	"\x03uid\x18\x04 \x01(\rR\x03uid\x12\x10\n" +
 	"\x03gid\x18\x05 \x01(\rR\x03gid\x12\x19\n" +
 	"\bmtime_ns\x18\x06 \x01(\x03R\amtimeNs\x12\x12\n" +
 	"\x04size\x18\a \x01(\x04R\x04size\x12%\n" +
-	"\x0esymlink_target\x18\b \x01(\tR\rsymlinkTarget\x12\x16\n" +
+	"\x0esymlink_target\x18\b \x01(\fR\rsymlinkTarget\x12\x16\n" +
 	"\x06chunks\x18\t \x03(\fR\x06chunks\"Q\n" +
 	"\x04Type\x12\x14\n" +
 	"\x10TYPE_UNSPECIFIED\x10\x00\x12\r\n" +

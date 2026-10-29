@@ -17,8 +17,14 @@ func TestRoundTrip(t *testing.T) {
 			Next:    "node-a/config",
 		},
 		&backupv1.Entry{
-			Path: "etc/hosts", Type: backupv1.Entry_TYPE_FILE, Mode: 0o644, MtimeNs: 1,
+			Path: []byte("etc/hosts"), Type: backupv1.Entry_TYPE_FILE, Mode: 0o644, MtimeNs: 1,
 			Size: 3, Chunks: [][]byte{make([]byte, 32)},
+		},
+		// Unix names are bytes: 0xff and invalid UTF-8 must survive exactly.
+		&backupv1.Entry{Path: []byte("var/lib/a/n\xffame"), Type: backupv1.Entry_TYPE_FILE},
+		&backupv1.Entry{
+			Path: []byte("var/lib/a/link"), Type: backupv1.Entry_TYPE_SYMLINK,
+			SymlinkTarget: []byte("../\xc3\x28\xff"),
 		},
 	} {
 		b, err := proto.Marshal(m)
@@ -32,5 +38,25 @@ func TestRoundTrip(t *testing.T) {
 		if !proto.Equal(m, got) {
 			t.Errorf("round trip: got %v, want %v", got, m)
 		}
+	}
+}
+
+// Paths are relative to the filesystem root, so the same name under two configured paths
+// stays two distinct entries.
+func TestEntryPathsDoNotCollide(t *testing.T) {
+	var got []string
+	for _, p := range []string{"var/lib/a/config", "var/lib/b/config"} {
+		b, err := proto.Marshal(&backupv1.Entry{Path: []byte(p), Type: backupv1.Entry_TYPE_FILE})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var e backupv1.Entry
+		if err := proto.Unmarshal(b, &e); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, string(e.Path))
+	}
+	if got[0] != "var/lib/a/config" || got[1] != "var/lib/b/config" {
+		t.Errorf("entries: got %q", got)
 	}
 }

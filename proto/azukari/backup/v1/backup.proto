@@ -15,16 +15,18 @@ message Entry {
     TYPE_SYMLINK = 3;
   }
 
-  // Relative to the configured path it was found under.
-  string path = 1;
+  // The absolute path without its leading "/" ("var/lib/a/config"): entries of several
+  // configured paths never collide and sort in one path order. Raw bytes: a Unix name is any
+  // non-NUL byte sequence, not necessarily UTF-8.
+  bytes path = 1;
   Type type = 2;
   uint32 mode = 3;
   uint32 uid = 4;
   uint32 gid = 5;
   int64 mtime_ns = 6;
   uint64 size = 7;
-  // TYPE_SYMLINK only.
-  string symlink_target = 8;
+  // TYPE_SYMLINK only, raw bytes as read by readlink.
+  bytes symlink_target = 8;
   // TYPE_FILE only: its chunk identifiers in order, 32 bytes each.
   repeated bytes chunks = 9;
 }
@@ -34,7 +36,8 @@ message Root {
   uint32 format = 1;
   int64 start_time_ns = 2;
   int64 end_time_ns = 3;
-  // The configured paths, as given in the configuration.
+  // The configured paths, as given in the configuration. string: they come from TOML, whose
+  // strings are UTF-8.
   repeated string paths = 4;
   // Chunk identifiers of the metadata stream, in order, 32 bytes each.
   repeated bytes metadata_chunks = 5;
