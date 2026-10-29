@@ -59,6 +59,9 @@ var beforeRefs = func() {}
 // fileReader is what a regular file is chunked from (test hook: fail a read midway).
 var fileReader = func(f *os.File) io.Reader { return f }
 
+// beforeOpen runs before a regular file is opened (test hook: remove it there).
+var beforeOpen = func(path string) {}
+
 // Run backs up cfg's paths into a new snapshot, logs backup-completed or backup-failed
 // (ADR 0009) and returns the snapshot's name.
 func Run(ctx context.Context, cfg *config.Backup, log *slog.Logger) (string, error) {
@@ -103,6 +106,16 @@ type run struct {
 // on. A file or directory that cannot be read is not one: the run fails, since a snapshot
 // that silently lacks it (or holds its chunks without its entry) would not restore as saved.
 type skipError struct{ error }
+
+// vanished turns an lstat or open error of a path removed since its directory was listed
+// (ENOENT, or ENOTDIR from a parent replaced meanwhile) into a skipError: nothing of it was
+// read yet, so the snapshot lacks it entirely, as if the run had started later.
+func vanished[T any](v T, err error) (T, error) {
+	if errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ENOTDIR) {
+		err = skipError{err}
+	}
+	return v, err
+}
 
 func (r *run) run(ctx context.Context, cfg *config.Backup) (string, error) {
 	node, k, c, err := connect(cfg)
@@ -179,7 +192,11 @@ func (r *run) run(ctx context.Context, cfg *config.Backup) (string, error) {
 		return "", err
 	}
 	// Sealed once with a random nonce: the client's retries send these same bytes.
-	if _, err := r.put(ctx, node+"/snapshots/"+name, r.key.SealRoot(name, root)); err != nil {
+	sealed := r.key.SealRoot(name, root)
+	if int64(len(sealed)) > maxRoot {
+		return "", fmt.Errorf("root: %d sealed bytes, over the %d a restore reads", len(sealed), maxRoot)
+	}
+	if _, err := r.put(ctx, node+"/snapshots/"+name, sealed); err != nil {
 		return "", fmt.Errorf("root: %w", err)
 	}
 	return name, nil
@@ -191,7 +208,7 @@ func (r *run) visit(ctx context.Context, root string) fs.WalkDirFunc {
 	return func(path string, d fs.DirEntry, err error) error {
 		var info fs.FileInfo
 		if err == nil {
-			info, err = d.Info()
+			info, err = vanished(d.Info())
 		}
 		if err == nil {
 			err = r.save(ctx, path, info)
@@ -249,7 +266,8 @@ func setMeta(e *backupv1.Entry, info fs.FileInfo) {
 // file chunks a regular file as read; a size or mtime that moved meanwhile is file-changed.
 func (r *run) file(ctx context.Context, path string, e *backupv1.Entry) error {
 	// O_NOFOLLOW, O_NONBLOCK: a file swapped for a symlink or a FIFO since the walk saw it.
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	beforeOpen(path)
+	f, err := vanished(os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0))
 	if err != nil {
 		return err // *PathError: names the path
 	}

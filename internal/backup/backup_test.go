@@ -444,3 +444,51 @@ func TestReadErrorMidway(t *testing.T) {
 		t.Error("backup-failed does not name the file")
 	}
 }
+
+// A file removed after its directory was listed, before its lstat or open, is file-skipped:
+// the run succeeds and the snapshot restores without it.
+func TestVanished(t *testing.T) {
+	e := start(t)
+	e.makeTree(t)
+	statGone, openGone := filepath.Join(e.tree, "gone-stat"), filepath.Join(e.tree, "gone-open")
+	write(t, statGone, []byte("x"))
+	write(t, openGone, []byte("y"))
+	beforeOpen = func(path string) {
+		switch path {
+		case filepath.Join(e.tree, "big"): // listed already, lstat comes later
+			os.Remove(statGone)
+		case openGone:
+			os.Remove(openGone)
+		}
+	}
+	t.Cleanup(func() { beforeOpen = func(string) {} })
+	before, err := os.Stat(e.tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := e.run(t)
+	// The removals moved the directory's mtime after it was saved.
+	if err := os.Chtimes(e.tree, before.ModTime(), before.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{statGone, openGone} {
+		if e.logs.count(`"file-skipped","path":"`+p+`"`) != 1 {
+			t.Errorf("%s not logged as file-skipped\n%s", p, e.logs.b.String())
+		}
+	}
+	target := t.TempDir()
+	if err := e.restore(name, target, false); err != nil {
+		t.Fatal(err)
+	}
+	sameTree(t, e.tree, target)
+}
+
+// A root sealed over maxRoot, which a restore would refuse, is never published.
+func TestRootTooLarge(t *testing.T) {
+	e := start(t)
+	e.makeTree(t)
+	m := maxRoot
+	maxRoot = 64
+	t.Cleanup(func() { maxRoot = m })
+	e.runFails(t, "over the 64 a restore reads")
+}

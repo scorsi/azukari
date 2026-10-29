@@ -25,9 +25,11 @@ import (
 // Bounds of the objects a restore reads, sealed sizes: a store cannot make it read more.
 const (
 	maxConfig = 4 << 10
-	maxRoot   = 16 << 20 // 34 bytes per metadata chunk: ~490 000 chunks, ~0.5 TiB of metadata
 	maxChunk  = fastcdc.MaxSize + seal.Overhead
 )
+
+// maxRoot also bounds the root a run publishes. A variable so tests can shrink it.
+var maxRoot int64 = 16 << 20 // 34 bytes per metadata chunk: ~490 000 chunks, ~0.5 TiB of metadata
 
 // objects is where a restore reads the node's objects from: the store's client, or (M5) a
 // directory holding a copy of the bucket.
