@@ -263,6 +263,10 @@
               inherit self pkgs;
               inherit (inputs) nisshi masu;
             };
+            backup-restore = import ./nix/tests/backup-restore.nix {
+              inherit self pkgs;
+              inherit (inputs) nisshi masu;
+            };
           };
 
           devShells.default = pkgs.mkShellNoCC {
