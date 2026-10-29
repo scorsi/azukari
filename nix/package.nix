@@ -19,11 +19,12 @@ buildGoModule (finalAttrs: {
       (lib.fileset.fileFilter (f: f.hasExt "go") ../.)
       ../internal/config/testdata
       ../internal/bucket/testdata
+      ../internal/seal/testdata
     ];
   };
 
   # After a go.mod change: set to lib.fakeHash and read the value from the build error.
-  vendorHash = "sha256-R2hwJv0JytUJQukciuBy96C7naLNOIFzzrorispCDc4=";
+  vendorHash = "sha256-vGi2sR4rSM7ayErWfPyMUFwdiK3ICl+Dnp/ghvHTy/g=";
 
   env.CGO_ENABLED = 0;
   ldflags = [
