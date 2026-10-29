@@ -41,7 +41,7 @@ The deployment's own steps live in the deployment repository.
   parallel uploads, `config`, `refs` (retry on `refs-incomplete`), root.
 - `azukari-backup snapshots`, `restore`, `restore --verify`, from the store.
 - NixOS module `services.azukari-backup`: oneshot with a timer, key file and SVID files,
-  paths, an optional command run before the backup (a service's dump).
+  paths, exports declared through the module (ADR 0020, 0021).
 - **Done when**: nixosTest `backup-restore` passes (restore on a fresh VM, trees equal,
   second run uploads only the change, first snapshot still restores).
 

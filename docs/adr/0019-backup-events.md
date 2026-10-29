@@ -1,6 +1,6 @@
 # ADR 0019 — Events of azukari-backup
 
-Status: Accepted — 2026-10-29. Completes ADR 0009 (events of `azukari-backup`).
+Status: Accepted — 2026-10-29. Completes ADR 0009 (events of `azukari-backup`); `restore-completed` amended by ADR 0020 (`owners`).
 
 ## Context
 

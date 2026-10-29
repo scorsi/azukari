@@ -24,3 +24,5 @@ Decision / Consequences. A decision is changed by a new ADR that supersedes the 
 | [0017](0017-backup-paths-root.md) | No `/` among the backed-up paths |
 | [0018](0018-golang-x-sys.md) | `golang.org/x/sys` for restore |
 | [0019](0019-backup-events.md) | Events of azukari-backup |
+| [0020](0020-backup-privileges.md) | azukari-backup runs as a static user and reads what services export |
+| [0021](0021-exports.md) | Exports: how services hand their data to azukari-backup |
