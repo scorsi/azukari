@@ -20,6 +20,7 @@ buildGoModule (finalAttrs: {
       ../internal/config/testdata
       ../internal/bucket/testdata
       ../internal/seal/testdata
+      ../internal/fastcdc/testdata
     ];
   };
 
