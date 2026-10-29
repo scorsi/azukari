@@ -27,8 +27,9 @@ let
       cp ${raw} $out
     '';
 
-  # One directory per export (ADR 0021): the backup's group reads it, never writes it.
+  # One directory per export (ADR 0021) and its group (ADR 0022): the backup reads it, never writes it.
   exportDir = name: "${cfg.exportsDir}/${name}";
+  exportGroup = name: "azukari-export-${name}";
   exportUnits = map (name: "azukari-export-${name}.service") (lib.attrNames cfg.exports);
 
   # Secrets named in the file: a store path is world-readable.
@@ -86,10 +87,12 @@ in
       default = { };
       description = ''
         Services' exports, the only data a run backs up (ADR 0020, 0021). Each `<name>` gets the
-        directory `<exportsDir>/<name>` (mode 2750, owner `user`, group `azukari-backup`), the
+        directory `<exportsDir>/<name>` (see below), the
         oneshot `azukari-export-<name>.service` that runs `command` as `user` with `EXPORT_DIR` set
         to that directory, and the directory in the backup's `paths`. The backup requires and runs
-        after every export: a failed export fails the run.
+        after every export: a failed export fails the run. Each export has its own group
+        `azukari-export-<name>` (ADR 0022), members `user` and `azukari-backup`, which the
+        directory carries (mode 2750, owner `user`); `<name>` may hold 17 characters at most.
       '';
       type = types.attrsOf (
         types.submodule {
@@ -109,7 +112,9 @@ in
                 Shell script (`set -e`) writing the export into `$EXPORT_DIR`, the only path it may
                 write. It must replace the previous export, never add next to it: the history lives
                 in azukari. Files are written group-readable (`UMask=0027`) and get the group
-                `azukari-backup` from the setgid directory.
+                `azukari-export-<name>` from the setgid directory. A file hard-linked into it keeps
+                its own group: the command gives it the export's group (`chgrp`, then mode 0640),
+                and links only files the service never writes again (ADR 0022).
               '';
             };
           };
@@ -128,13 +133,29 @@ in
       ++ map (name: {
         assertion = builtins.match "[A-Za-z0-9_-]+" name != null;
         message = "services.azukari-backup.exports.${name}: the name may hold only letters, digits, '_' and '-'.";
+      }) (lib.attrNames cfg.exports)
+      # Linux group names hold 32 characters at most.
+      ++ map (name: {
+        assertion = lib.stringLength (exportGroup name) <= 32;
+        message = "services.azukari-backup.exports.${name}: the group ${exportGroup name} is longer than 32 characters; shorten the name.";
       }) (lib.attrNames cfg.exports);
 
     users.users.azukari-backup = {
       isSystemUser = true;
       group = "azukari-backup";
     };
-    users.groups.azukari-backup = { };
+    # One group per export (ADR 0022). `members` merges with a user the service's own module
+    # declares. Static users: membership is all the units need (initgroups), no
+    # SupplementaryGroups=. Root needs no group to chgrp.
+    users.groups = {
+      azukari-backup = { };
+    }
+    // lib.mapAttrs' (
+      name: e:
+      lib.nameValuePair (exportGroup name) {
+        members = [ "azukari-backup" ] ++ lib.optional (e.user != "root") e.user;
+      }
+    ) cfg.exports;
 
     environment.etc."azukari/azukari-backup.toml".source = configFile;
 
@@ -142,13 +163,13 @@ in
       lib.mapAttrsToList (name: _: exportDir name) cfg.exports
     );
 
-    # `z` also fixes an existing directory. Setgid: exported files get the group azukari-backup.
+    # `z` also fixes an existing directory. Setgid: exported files get the export's group.
     systemd.tmpfiles.rules =
       lib.optional (cfg.exports != { }) "d ${cfg.exportsDir} 0750 root azukari-backup -"
       ++ lib.concatLists (
         lib.mapAttrsToList (name: e: [
-          "d ${exportDir name} 2750 ${e.user} azukari-backup -"
-          "z ${exportDir name} 2750 ${e.user} azukari-backup -"
+          "d ${exportDir name} 2750 ${e.user} ${exportGroup name} -"
+          "z ${exportDir name} 2750 ${e.user} ${exportGroup name} -"
         ]) cfg.exports
       );
 
@@ -163,7 +184,7 @@ in
             Type = "oneshot";
             User = e.user;
             Group = lib.mkIf (e.group != null) e.group;
-            UMask = "0027"; # Group-readable for azukari-backup.
+            UMask = "0027"; # Group-readable for azukari-backup, through the export's group.
             # Hardening as the backup run, writable only in its directory. Not the run's syscall filter
             # nor MemoryDenyWriteExecute: the command is any service's dump tool.
             ProtectSystem = "strict";

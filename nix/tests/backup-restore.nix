@@ -46,11 +46,17 @@ let
     # keeps it in the root-only fixture /srv/fixture and the export copies it. Root, because only
     # root sets the exotic owners (uid 4242, alice) whose restore is tested; a service's export
     # would run as that service's user. `cp -a` keeps modes, owners, mtimes and links.
+    # Then one hard link given the export's group (ADR 0022): `big` and `linked` share an inode
+    # the backup reads only through its membership in azukari-export-data. The link is made inside
+    # the export: the sandbox's ReadWritePaths= is its own mount, a link from outside gets EXDEV.
     services.azukari-backup.exports.data = {
       user = "root";
       command = ''
         find "$EXPORT_DIR" -mindepth 1 -delete
         cp -a /srv/fixture/. "$EXPORT_DIR"
+        ln "$EXPORT_DIR/big" "$EXPORT_DIR/linked"
+        chgrp azukari-export-data "$EXPORT_DIR/linked"
+        chmod 0640 "$EXPORT_DIR/linked"
       '';
     };
     # The tree holds a setuid file (its mode must survive a restore); the export's
@@ -195,6 +201,9 @@ pkgs.testers.runNixOSTest {
         backup()
         orig = capture("one")
         assert " 4755 " in orig and " 1777 " in orig, orig
+        # The hard link, group azukari-export-data and no world read, was backed up and restored.
+        node_a.succeed(f"test \"$(stat -c '%G %a %h' {data}/linked)\" = 'azukari-export-data 640 2'")
+        assert "./linked f 640 " in orig, orig
         first = snapshots()
         assert len(first) == 1, first
         before = chunks()

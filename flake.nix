@@ -173,6 +173,16 @@
                 ex = withExport.systemd.services.azukari-export-db;
                 exUnit = withExport.systemd.services.azukari-backup;
                 badName = backupFor linux { services.azukari-backup.exports."..".user = "db"; };
+                # 15 + 18 characters: one over Linux's 32 for the group name (ADR 0022).
+                longName = backupFor linux {
+                  services.azukari-backup.exports.${lib.fixedWidthString 18 "a" ""}.user = "db";
+                };
+                rootExport = backupFor linux {
+                  services.azukari-backup.exports.${lib.fixedWidthString 17 "a" ""} = {
+                    user = "root";
+                    command = "true";
+                  };
+                };
               in
               assert
                 lib.hasSuffix "/bin/azukari-backup run /etc/azukari/azukari-backup.toml" sc.ExecStart
@@ -223,9 +233,20 @@
                 && backup.systemd.services.azukari-backup.requires == [ ];
               assert lib.all (l: lib.elem l withExport.systemd.tmpfiles.rules) [
                 "d /persist/backups 0750 root azukari-backup -"
-                "d /persist/backups/db 2750 db azukari-backup -"
-                "z /persist/backups/db 2750 db azukari-backup -"
+                "d /persist/backups/db 2750 db azukari-export-db -"
+                "z /persist/backups/db 2750 db azukari-export-db -"
               ];
+              # One group per export, shared by its user and the backup only (ADR 0022).
+              assert
+                lib.sort lib.lessThan withExport.users.groups.azukari-export-db.members == [
+                  "azukari-backup"
+                  "db"
+                ]
+                &&
+                  rootExport.users.groups.${"azukari-export-" + lib.fixedWidthString 17 "a" ""}.members == [
+                    "azukari-backup"
+                  ]
+                && !(withExport.systemd.services.azukari-backup.serviceConfig ? SupplementaryGroups);
               assert
                 lib.sort lib.lessThan withExport.services.azukari-backup.settings.paths == [
                   "/persist/backups/db"
@@ -233,6 +254,7 @@
                   "/var/lib/a"
                 ];
               assert failed badName == failed backup + 1;
+              assert failed longName == failed backup + 1 && failed rootExport == failed backup;
               pkgs.runCommand "azukari-backup-module-eval" { } ''
                 echo ${lib.escapeShellArg (builtins.unsafeDiscardStringContext (builtins.toJSON sc))} > $out
               '';
