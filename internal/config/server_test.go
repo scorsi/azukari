@@ -39,9 +39,13 @@ func TestServerPortDefault(t *testing.T) {
 	}
 }
 
-// TestServerRefused: each fixture's first line is `# want: <part of the error>`.
 func TestServerRefused(t *testing.T) {
-	files, _ := filepath.Glob("testdata/server/refused/*.toml")
+	testRefused(t, "testdata/server/refused", func(b []byte) error { _, err := ParseServer(b); return err })
+}
+
+// testRefused: each fixture's first line is `# want: <part of the error>`.
+func testRefused(t *testing.T, dir string, parse func([]byte) error) {
+	files, _ := filepath.Glob(dir + "/*.toml")
 	if len(files) == 0 {
 		t.Fatal("no fixtures")
 	}
@@ -56,7 +60,7 @@ func TestServerRefused(t *testing.T) {
 			if !ok {
 				t.Fatal("first line must be # want: <error>")
 			}
-			_, err = ParseServer(data)
+			err = parse(data)
 			if err == nil || !strings.Contains(err.Error(), want) {
 				t.Fatalf("got %v, want an error containing %q", err, want)
 			}

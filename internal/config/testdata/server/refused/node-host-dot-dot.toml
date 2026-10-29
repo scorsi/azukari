@@ -1,4 +1,4 @@
-# want: buckets[0] backup: nodes[1]: "spiffe://example.org/../azukari-backup" host segment must be a key segment
+# want: buckets[0] backup: nodes[1]: "spiffe://example.org/../azukari-backup" is not spiffe://<trust domain>/<host>/<service>
 listen = ["[::]:8443", "127.0.0.1:8443"]
 listen_metrics = "127.0.0.1:9464"
 

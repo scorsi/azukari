@@ -1,0 +1,11 @@
+# want: data_key_file: "" must be a clean absolute path
+server = "https://store.example.org:8443"
+bucket = "backup"
+paths = ["/var/lib/a", "/var/lib/b", "/var/lib/ab"]
+
+[tls]
+trust_domain = "example.org"
+server_id = "spiffe://example.org/store-host/azukari-server"
+svid_file = "/run/azukari-backup/svid.pem"
+key_file = "/run/azukari-backup/key.pem"
+bundle_file = "/run/azukari-backup/bundle.pem"

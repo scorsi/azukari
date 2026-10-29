@@ -1,0 +1,12 @@
+# want: unknown key "key_file"
+server = "https://store.example.org:8443"
+bucket = "backup"
+key_file = "/var/lib/azukari-backup/data.key"
+paths = ["/var/lib/a", "/var/lib/b", "/var/lib/ab"]
+
+[tls]
+trust_domain = "example.org"
+server_id = "spiffe://example.org/store-host/azukari-server"
+svid_file = "/run/azukari-backup/svid.pem"
+key_file = "/run/azukari-backup/key.pem"
+bundle_file = "/run/azukari-backup/bundle.pem"

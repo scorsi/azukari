@@ -1,0 +1,6 @@
+# want: tls.trust_domain: "" must be
+server = "https://store.example.org:8443"
+bucket = "backup"
+data_key_file = "/var/lib/azukari-backup/data.key"
+paths = ["/var/lib/a", "/var/lib/b", "/var/lib/ab"]
+

@@ -1,5 +1,6 @@
 // Package config parses and validates azukari's TOML files: the store's (ADR 0004, 0005, 0007,
-// 0008, 0009). Every check here needs no disk; mounts and bucket directories are checked at start.
+// 0008, 0009, 0011) and the backup component's (ADR 0005, 0006, 0011). Every check here needs no
+// disk; mounts and bucket directories are checked at start.
 package config
 
 import (
@@ -313,24 +314,33 @@ func (r *Replica) validate(at string, add func(string, ...any)) {
 	}
 }
 
-// checkNodeID: spiffe://<trust domain>/<host>/<service>, the host a key segment (ADR 0003, 0005).
+// checkNodeID: a SPIFFE ID whose host is a key segment, the node's namespace (ADR 0003, 0005).
 func checkNodeID(id, trustDomain string) error {
-	u, err := url.Parse(id)
-	if err != nil || u.Scheme != "spiffe" || u.Opaque != "" || u.User != nil || u.Port() != "" ||
-		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawPath != "" || u.String() != id {
-		return errors.New("is not spiffe://<trust domain>/<host>/<service>")
+	host, err := checkID(id, trustDomain)
+	if err != nil {
+		return err
 	}
-	if u.Host != trustDomain {
-		return fmt.Errorf("is outside trust domain %q", trustDomain)
-	}
-	segs := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
-	if !strings.HasPrefix(u.Path, "/") || len(segs) != 2 || !validSegment(segs[1], idSegmentRE) {
-		return errors.New("is not spiffe://<trust domain>/<host>/<service>")
-	}
-	if !validSegment(segs[0], keySegmentRE) {
+	if !validSegment(host, keySegmentRE) {
 		return errors.New("host segment must be a key segment: [a-z0-9._-], not '.' or '..'")
 	}
 	return nil
+}
+
+// checkID: spiffe://<trust domain>/<host>/<service> (hanko ADR-0004); returns the host segment.
+func checkID(id, trustDomain string) (string, error) {
+	u, err := url.Parse(id)
+	if err != nil || u.Scheme != "spiffe" || u.Opaque != "" || u.User != nil || u.Port() != "" ||
+		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawPath != "" || u.String() != id {
+		return "", errors.New("is not spiffe://<trust domain>/<host>/<service>")
+	}
+	if u.Host != trustDomain {
+		return "", fmt.Errorf("is outside trust domain %q", trustDomain)
+	}
+	segs := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
+	if !strings.HasPrefix(u.Path, "/") || len(segs) != 2 || !validSegment(segs[0], idSegmentRE) || !validSegment(segs[1], idSegmentRE) {
+		return "", errors.New("is not spiffe://<trust domain>/<host>/<service>")
+	}
+	return segs[0], nil
 }
 
 func validSegment(s string, re *regexp.Regexp) bool {
