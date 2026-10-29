@@ -316,7 +316,7 @@ func (r *Replica) validate(at string, add func(string, ...any)) {
 
 // checkNodeID: a SPIFFE ID whose host is a key segment, the node's namespace (ADR 0003, 0005).
 func checkNodeID(id, trustDomain string) error {
-	host, err := checkID(id, trustDomain)
+	host, err := CheckID(id, trustDomain)
 	if err != nil {
 		return err
 	}
@@ -326,8 +326,8 @@ func checkNodeID(id, trustDomain string) error {
 	return nil
 }
 
-// checkID: spiffe://<trust domain>/<host>/<service> (hanko ADR-0004); returns the host segment.
-func checkID(id, trustDomain string) (string, error) {
+// CheckID checks spiffe://<trust domain>/<host>/<service> (hanko ADR-0004); returns the host segment.
+func CheckID(id, trustDomain string) (string, error) {
 	u, err := url.Parse(id)
 	if err != nil || u.Scheme != "spiffe" || u.Opaque != "" || u.User != nil || u.Port() != "" ||
 		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawPath != "" || u.String() != id {

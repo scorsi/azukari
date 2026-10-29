@@ -77,7 +77,7 @@ func (c *Backup) validate() error {
 		}
 	}
 	c.TLS.validate(add)
-	if _, err := checkID(c.TLS.ServerID, c.TLS.TrustDomain); err != nil {
+	if _, err := CheckID(c.TLS.ServerID, c.TLS.TrustDomain); err != nil {
 		add("tls.server_id: %q %v", c.TLS.ServerID, err)
 	}
 	return errors.Join(errs...)
