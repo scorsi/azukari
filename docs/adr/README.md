@@ -27,3 +27,4 @@ Decision / Consequences. A decision is changed by a new ADR that supersedes the 
 | [0020](0020-backup-privileges.md) | azukari-backup runs as a static user and reads what services export |
 | [0021](0021-exports.md) | Exports: how services hand their data to azukari-backup |
 | [0022](0022-export-groups.md) | One group per export |
+| [0023](0023-export-writable-paths.md) | Writable paths of an export |

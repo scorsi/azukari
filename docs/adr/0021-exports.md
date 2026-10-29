@@ -1,6 +1,6 @@
 # ADR 0021 — Exports: how services hand their data to azukari-backup
 
-Status: Accepted — 2026-10-29. Completes ADR 0020; export directory group amended by ADR 0022.
+Status: Accepted — 2026-10-29. Completes ADR 0020; export directory group amended by ADR 0022; writable paths amended by ADR 0023.
 
 ## Context
 
