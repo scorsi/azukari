@@ -119,9 +119,13 @@ func TestRestore(t *testing.T) {
 	if b, _ := os.ReadFile(filepath.Join(old, e.tree, "text.txt")); string(b) != "hello, azukari\n" {
 		t.Errorf("first snapshot's text.txt = %q", b)
 	}
-	if err := e.restore(second, filepath.Join(t.TempDir(), "new"), false); err != nil {
-		t.Fatal(err)
+	// An existing empty directory is a valid target, as an absent one.
+	empty := t.TempDir()
+	if err := Restore(context.Background(), e.cfg, second, empty, false, logging.New(e.logs, slog.LevelInfo)); err != nil {
+		t.Fatalf("restore into an existing empty target: %v", err)
 	}
+	sameTree(t, e.tree, empty)
+	os.Chmod(filepath.Join(empty, e.tree, "d1"), 0o755)
 
 	// Both listed, first field the name.
 	var out bytes.Buffer

@@ -235,7 +235,11 @@ func readNames(dir string) ([]string, error) {
 		return nil, err
 	}
 	defer f.Close()
-	return f.Readdirnames(1)
+	names, err := f.Readdirnames(1)
+	if err == io.EOF { // an empty directory
+		return nil, nil
+	}
+	return names, err
 }
 
 // entry checks one entry's path and restores it.
