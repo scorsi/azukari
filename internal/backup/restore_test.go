@@ -3,6 +3,7 @@ package backup
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"syscall"
 	"testing"
 
+	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/encoding/protodelim"
 	"google.golang.org/protobuf/proto"
 
@@ -237,4 +239,47 @@ func (e *env) crafted(t *testing.T, entries []*backupv1.Entry) string {
 		t.Fatal(err)
 	}
 	return name
+}
+
+// Every file and directory is synced, the made parents, the target and its parent too; a
+// failing fsync, whichever, fails the restore.
+func TestRestoreSync(t *testing.T) {
+	e := start(t)
+	e.makeTree(t)
+	name := e.run(t)
+	t.Cleanup(func() { fsync = unix.Fsync })
+
+	calls := 0
+	fsync = func(fd int) error { calls++; return unix.Fsync(fd) }
+	if err := e.restore(name, filepath.Join(t.TempDir(), "r"), false); err != nil {
+		t.Fatal(err)
+	}
+	// 4 files, 3 directories, the parents made above the tree, the target and its parent.
+	made := len(strings.Split(strings.TrimPrefix(filepath.Dir(e.tree), "/"), "/"))
+	if want := 4 + 3 + made + 2; calls != want {
+		t.Errorf("%d fsyncs, want %d", calls, want)
+	}
+	if fsync = func(int) error { panic("fsync under verify") }; e.restore(name, filepath.Join(t.TempDir(), "v"), true) != nil {
+		t.Error("verify failed")
+	}
+
+	for fail := range calls {
+		n := 0
+		fsync = func(fd int) error {
+			if n++; n-1 == fail {
+				return syscall.EIO
+			}
+			return unix.Fsync(fd)
+		}
+		failed := e.logs.count(`"restore-failed"`)
+		if err := e.restore(name, filepath.Join(t.TempDir(), "r"), false); !errors.Is(err, syscall.EIO) {
+			t.Errorf("fsync %d failing: err = %v", fail, err)
+		}
+		if e.logs.count(`"restore-failed"`) != failed+1 {
+			t.Errorf("fsync %d failing: no restore-failed", fail)
+		}
+	}
+	if e.logs.count(`"restore-completed"`) != 2 {
+		t.Error("a restore with a failed fsync completed")
+	}
 }

@@ -27,6 +27,9 @@ type objects interface {
 	Get(ctx context.Context, key string) ([]byte, error)
 }
 
+// fsync makes a restored file or directory durable (test hook: fail a sync).
+var fsync = unix.Fsync
+
 // Snapshots writes one line per snapshot of the node to w, in name order:
 // "<name> <start> <end> entries=<n> bytes=<n> chunks=<n> new_chunks=<n>", times in RFC 3339
 // UTC with nanoseconds. A failure is logged as snapshots-failed.
@@ -139,6 +142,7 @@ type restorer struct {
 
 	kinds  map[string]bool       // every path restored or made: true for a directory
 	dirs   []*backupv1.Entry     // directories, their metadata applied last
+	made   []string              // directories made above configured paths, parents first
 	chunks map[[32]byte]struct{} // every chunk read, the metadata stream's included
 
 	entries, bytes uint64
@@ -167,8 +171,9 @@ func (r *restorer) restore(ctx context.Context, cfg *config.Backup, name, target
 	if err != nil {
 		return err
 	}
+	created := false
 	if !r.verify {
-		if r.target, err = openTarget(target); err != nil {
+		if r.target, created, err = openTarget(target); err != nil {
 			return err
 		}
 	}
@@ -195,6 +200,11 @@ func (r *restorer) restore(ctx context.Context, cfg *config.Backup, name, target
 			return fmt.Errorf("%q: %w", r.dirs[i].Path, err)
 		}
 	}
+	if !r.verify {
+		if err := r.syncDirs(target, created); err != nil {
+			return err
+		}
+	}
 	t := root.GetTotals()
 	if r.entries != t.GetEntries() || r.bytes != t.GetBytes() || uint64(len(r.chunks)) != t.GetChunks() {
 		return fmt.Errorf("restored %d entries, %d bytes, %d chunks; the root says %d, %d, %d",
@@ -203,25 +213,57 @@ func (r *restorer) restore(ctx context.Context, cfg *config.Backup, name, target
 	return nil
 }
 
-// openTarget creates target or checks it is an empty directory, and opens it.
-func openTarget(target string) (int, error) {
-	err := os.Mkdir(target, 0o700)
+// syncDirs makes the directories this restore made above configured paths durable, deepest
+// first, then the target, then the target's parent when the target was created.
+func (r *restorer) syncDirs(target string, created bool) error {
+	for i := len(r.made) - 1; i >= 0; i-- {
+		fd, err := r.parent(r.made[i])
+		if err == nil {
+			err = fsync(fd)
+		}
+		if err != nil {
+			return fmt.Errorf("%q: fsync: %w", r.made[i], err)
+		}
+	}
+	if err := fsync(r.target); err != nil {
+		return fmt.Errorf("target %s: fsync: %w", target, err)
+	}
+	if !created {
+		return nil
+	}
+	up := filepath.Dir(target)
+	fd, err := unix.Open(up, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("target's parent %s: %w", up, err)
+	}
+	defer unix.Close(fd)
+	if err := fsync(fd); err != nil {
+		return fmt.Errorf("target's parent %s: fsync: %w", up, err)
+	}
+	return nil
+}
+
+// openTarget creates target or checks it is an empty directory, and opens it; created
+// reports whether this call made it.
+func openTarget(target string) (fd int, created bool, err error) {
+	err = os.Mkdir(target, 0o700)
 	if errors.Is(err, os.ErrExist) {
 		names, rerr := readNames(target)
 		if rerr != nil {
-			return -1, fmt.Errorf("target: %w", rerr)
+			return -1, false, fmt.Errorf("target: %w", rerr)
 		}
 		if len(names) > 0 {
-			return -1, fmt.Errorf("target %s is not empty", target)
+			return -1, false, fmt.Errorf("target %s is not empty", target)
 		}
 	} else if err != nil {
-		return -1, fmt.Errorf("target: %w", err)
+		return -1, false, fmt.Errorf("target: %w", err)
 	}
-	fd, err := unix.Open(target, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	created = err == nil
+	fd, err = unix.Open(target, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return -1, fmt.Errorf("target %s: %w", target, err)
+		return -1, false, fmt.Errorf("target %s: %w", target, err)
 	}
-	return fd, nil
+	return fd, created, nil
 }
 
 func readNames(dir string) ([]string, error) {
@@ -322,6 +364,7 @@ func (r *restorer) mkParents(parent string) error {
 			if err := unix.Mkdirat(dir, segs[i], 0o700); err != nil {
 				return err
 			}
+			r.made = append(r.made, p)
 		}
 		r.kinds[p] = true
 	}
@@ -356,7 +399,8 @@ func (r *restorer) parent(p string) (int, error) {
 	return fd, nil
 }
 
-// file writes a file from its chunks (O_EXCL, O_NOFOLLOW), then owner, mode and mtime.
+// file writes a file from its chunks (O_EXCL, O_NOFOLLOW), then owner, mode and mtime, and
+// syncs it.
 func (r *restorer) file(dir int, name string, e *backupv1.Entry) error {
 	var f *os.File
 	if !r.verify {
@@ -396,13 +440,17 @@ func (r *restorer) file(dir int, name string, e *backupv1.Entry) error {
 	if err := unix.Fchmod(int(f.Fd()), e.Mode&0o7777); err != nil {
 		return err
 	}
-	if err := f.Close(); err != nil {
+	if err := setMtime(dir, name, e.MtimeNs); err != nil {
 		return err
 	}
-	return setMtime(dir, name, e.MtimeNs)
+	if err := fsync(int(f.Fd())); err != nil {
+		return fmt.Errorf("fsync: %w", err)
+	}
+	return f.Close()
 }
 
-// dirMeta sets a restored directory's owner, mode and mtime.
+// dirMeta sets a restored directory's owner, mode and mtime, and syncs it (its contents are
+// complete: directories are done deepest first).
 func (r *restorer) dirMeta(e *backupv1.Entry) error {
 	if r.verify {
 		return nil
@@ -425,7 +473,13 @@ func (r *restorer) dirMeta(e *backupv1.Entry) error {
 	if err := unix.Fchmod(fd, e.Mode&0o7777); err != nil {
 		return err
 	}
-	return setMtime(dir, name, e.MtimeNs)
+	if err := setMtime(dir, name, e.MtimeNs); err != nil {
+		return err
+	}
+	if err := fsync(fd); err != nil {
+		return fmt.Errorf("fsync: %w", err)
+	}
+	return nil
 }
 
 // setMtime sets atime and mtime of name in dir, a symlink itself rather than its target.
