@@ -5,7 +5,7 @@
 
 *預かり (azukari): what is kept in custody for someone, and given back only to them.*
 
-**Status:** design (ADRs in progress); no code yet.
+**Status:** design done (ADRs 0001–0010, milestones); M0 next.
 
 ## Components
 
@@ -21,7 +21,7 @@ a general-purpose client, a web UI.
 
 ## Documents
 
-- [ADRs](docs/adr/README.md)
+- [ADRs](docs/adr/README.md), [milestones](docs/milestones.md)
 
 ## Conventions
 

@@ -13,3 +13,5 @@ Decision / Consequences. A decision is changed by a new ADR that supersedes the 
 | [0006](0006-backup-format.md) | Backup format |
 | [0007](0007-retention.md) | Retention and pruning |
 | [0008](0008-replication.md) | Replication |
+| [0009](0009-observability.md) | Observability |
+| [0010](0010-testing.md) | Testing |
