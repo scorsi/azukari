@@ -18,14 +18,16 @@ func TestSchemaLine(t *testing.T) {
 	log.Info("", "event", "certificate-valid", "certificate", "home")
 	log.Error("", "event", "reload-failed", "unit", "consumer.service", "err", "boom")
 	log.Debug("", "event", "hidden")
+	Std(log, func(string) string { return "http-error" }).Print("http: oops")
 
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("want 2 lines, got %q", lines)
+	if len(lines) != 3 {
+		t.Fatalf("want 3 lines, got %q", lines)
 	}
 	want := []map[string]any{
 		{"v": 1.0, "level": "info", "event": "certificate-valid", "certificate": "home"},
 		{"v": 1.0, "level": "error", "event": "reload-failed", "unit": "consumer.service", "err": "boom"},
+		{"v": 1.0, "level": "warn", "event": "http-error", "err": "http: oops"},
 	}
 	for i, line := range lines {
 		var got map[string]any

@@ -1,11 +1,12 @@
 // Package logging writes nisshi log schema v1 lines with log/slog (ADR 0009): the reference
 // ReplaceAttr of nisshi's docs/log-schema.md, `event` as an attribute, `msg` dropped when
-// empty. Copied from hanko's internal/logging (itself copied from genkan's), with its tests;
-// copied, not shared (nisshi ADR 0004).
+// empty. Copied from hanko's internal/logging (itself copied from genkan's), with its tests,
+// and genkan's Std adapter; copied, not shared (nisshi ADR 0004).
 package logging
 
 import (
 	"io"
+	"log"
 	"log/slog"
 	"strings"
 )
@@ -36,4 +37,21 @@ func New(w io.Writer, level slog.Leveler) *slog.Logger {
 		},
 	})
 	return slog.New(h).With("v", 1)
+}
+
+// Std adapts l for the *log.Logger that net/http and httputil write their own errors to (an
+// ErrorLog). Each line becomes a warn record: the event classify picks, the line as err.
+func Std(l *slog.Logger, classify func(line string) string) *log.Logger {
+	return log.New(writer{l, classify}, "", 0)
+}
+
+type writer struct {
+	log      *slog.Logger
+	classify func(string) string
+}
+
+func (w writer) Write(b []byte) (int, error) {
+	line := strings.TrimSuffix(string(b), "\n")
+	w.log.Warn("", "event", w.classify(line), "err", line)
+	return len(b), nil
 }

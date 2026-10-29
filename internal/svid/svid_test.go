@@ -1,139 +1,29 @@
 package svid
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
-	"math/big"
 	"net"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/scorsi/azukari/internal/config"
+	"github.com/scorsi/azukari/internal/testca"
 )
 
 const (
-	trustDomain = "example.org"
+	trustDomain = testca.TrustDomain
 	serverID    = "spiffe://example.org/store-host/azukari-server"
 	nodeID      = "spiffe://example.org/node-a/azukari-backup"
 )
 
-// testCA issues SVIDs with the internal CA's profile (hanko ADR-0004): P-256, a single URI
-// SAN, no DNS SAN, both EKUs. Copied pattern from hanko's internal/testutil.
-type testCA struct {
-	cert *x509.Certificate
-	key  *ecdsa.PrivateKey
-	pem  []byte
-}
-
-func newKey(t *testing.T) *ecdsa.PrivateKey {
+func source(t *testing.T, ca *testca.CA, id string) *Source {
 	t.Helper()
-	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return k
-}
-
-func serial(t *testing.T) *big.Int {
-	t.Helper()
-	n, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 64))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return n
-}
-
-func newCA(t *testing.T) *testCA {
-	t.Helper()
-	k := newKey(t)
-	tmpl := &x509.Certificate{
-		SerialNumber:          serial(t),
-		Subject:               pkix.Name{CommonName: "azukari test CA"},
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(24 * time.Hour),
-		KeyUsage:              x509.KeyUsageCertSign,
-		BasicConstraintsValid: true,
-		IsCA:                  true,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &k.PublicKey, k)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cert, err := x509.ParseCertificate(der)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return &testCA{cert: cert, key: k, pem: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})}
-}
-
-// issue returns an SVID for id, PEM cert and key, after mod adjusts the template.
-func (c *testCA) issue(t *testing.T, id string, mod func(*x509.Certificate)) (certPEM, keyPEM []byte) {
-	t.Helper()
-	u, err := url.Parse(id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	k := newKey(t)
-	tmpl := &x509.Certificate{
-		SerialNumber:          serial(t),
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(23 * time.Hour),
-		KeyUsage:              x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
-		BasicConstraintsValid: true,
-		URIs:                  []*url.URL{u},
-	}
-	if mod != nil {
-		mod(tmpl)
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, c.cert, &k.PublicKey, c.key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	kd, err := x509.MarshalPKCS8PrivateKey(k)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: kd})
-}
-
-func write(t *testing.T, path string, data []byte) {
-	t.Helper()
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// files writes the three files into a new directory and returns their [tls] table.
-func files(t *testing.T, cert, key, bundle []byte) config.TLS {
-	t.Helper()
-	dir := t.TempDir()
-	f := config.TLS{
-		TrustDomain: trustDomain,
-		SVIDFile:    filepath.Join(dir, "svid.pem"),
-		KeyFile:     filepath.Join(dir, "key.pem"),
-		BundleFile:  filepath.Join(dir, "bundle.pem"),
-	}
-	write(t, f.SVIDFile, cert)
-	write(t, f.KeyFile, key)
-	write(t, f.BundleFile, bundle)
-	return f
-}
-
-func source(t *testing.T, ca *testCA, id string) *Source {
-	t.Helper()
-	cert, key := ca.issue(t, id, nil)
-	s, err := Load(files(t, cert, key, ca.pem))
+	s, err := Load(ca.SVID(t, id))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,14 +41,14 @@ func parse(t *testing.T, certPEM []byte) *x509.Certificate {
 }
 
 func TestVerify(t *testing.T) {
-	ca := newCA(t)
+	ca := testca.New(t)
 	roots := x509.NewCertPool()
-	roots.AddCert(ca.cert)
+	roots.AddCert(ca.Cert)
 	other, _ := url.Parse("spiffe://example.org/node-b/azukari-backup")
 
 	cases := []struct {
 		name string
-		ca   *testCA
+		ca   *testca.CA
 		id   string
 		mod  func(*x509.Certificate)
 		eku  x509.ExtKeyUsage
@@ -177,7 +67,7 @@ func TestVerify(t *testing.T) {
 				c.NotBefore = time.Now().Add(-48 * time.Hour)
 				c.NotAfter = time.Now().Add(-time.Hour)
 			}},
-		{name: "another CA", ca: newCA(t), id: nodeID, eku: x509.ExtKeyUsageClientAuth, want: "unknown authority"},
+		{name: "another CA", ca: testca.New(t), id: nodeID, eku: x509.ExtKeyUsageClientAuth, want: "unknown authority"},
 		{name: "server auth only as client", id: nodeID, eku: x509.ExtKeyUsageClientAuth, want: "key usage",
 			mod: func(c *x509.Certificate) { c.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth} }},
 		{name: "client auth only as server", id: serverID, eku: x509.ExtKeyUsageServerAuth, want: "key usage",
@@ -189,7 +79,7 @@ func TestVerify(t *testing.T) {
 			if tc.ca != nil {
 				issuer = tc.ca
 			}
-			cert, _ := issuer.issue(t, tc.id, tc.mod)
+			cert, _ := issuer.Issue(t, tc.id, tc.mod)
 			id, host, err := Verify([]*x509.Certificate{parse(t, cert)}, roots, tc.eku, trustDomain)
 			if tc.want == "" {
 				if err != nil {
@@ -211,18 +101,18 @@ func TestVerify(t *testing.T) {
 }
 
 func TestLoadRefusesMismatchedKey(t *testing.T) {
-	ca := newCA(t)
-	cert, _ := ca.issue(t, nodeID, nil)
-	_, key := ca.issue(t, nodeID, nil)
-	if _, err := Load(files(t, cert, key, ca.pem)); err == nil || !strings.Contains(err.Error(), "does not match") {
+	ca := testca.New(t)
+	cert, _ := ca.Issue(t, nodeID, nil)
+	_, key := ca.Issue(t, nodeID, nil)
+	if _, err := Load(testca.Files(t, cert, key, ca.PEM)); err == nil || !strings.Contains(err.Error(), "does not match") {
 		t.Fatalf("err = %v", err)
 	}
 }
 
 func TestLoadRefusesEmptyBundle(t *testing.T) {
-	ca := newCA(t)
-	cert, key := ca.issue(t, nodeID, nil)
-	if _, err := Load(files(t, cert, key, []byte("garbage"))); err == nil || !strings.Contains(err.Error(), "no certificate") {
+	ca := testca.New(t)
+	cert, key := ca.Issue(t, nodeID, nil)
+	if _, err := Load(testca.Files(t, cert, key, []byte("garbage"))); err == nil || !strings.Contains(err.Error(), "no certificate") {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -273,7 +163,7 @@ func handshake(t *testing.T, srv, cli *tls.Config) (srvErr, cliErr error, state 
 }
 
 func TestHandshake(t *testing.T) {
-	ca := newCA(t)
+	ca := testca.New(t)
 	store := source(t, ca, serverID)
 	node := source(t, ca, nodeID)
 
@@ -297,9 +187,9 @@ func TestHandshake(t *testing.T) {
 		}
 	})
 	t.Run("client from another CA", func(t *testing.T) {
-		stranger := newCA(t)
-		cert, key := stranger.issue(t, nodeID, nil)
-		s, err := Load(files(t, cert, key, ca.pem))
+		stranger := testca.New(t)
+		cert, key := stranger.Issue(t, nodeID, nil)
+		s, err := Load(testca.Files(t, cert, key, ca.PEM))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -318,9 +208,9 @@ func TestHandshake(t *testing.T) {
 }
 
 func TestReload(t *testing.T) {
-	oldCA := newCA(t)
-	cert, key := oldCA.issue(t, serverID, nil)
-	f := files(t, cert, key, oldCA.pem)
+	oldCA := testca.New(t)
+	cert, key := oldCA.Issue(t, serverID, nil)
+	f := testca.Files(t, cert, key, oldCA.PEM)
 	store, err := Load(f)
 	if err != nil {
 		t.Fatal(err)
@@ -329,11 +219,11 @@ func TestReload(t *testing.T) {
 	first := store.NotAfter()
 
 	// The CA rolls: a new SVID and a bundle trusting both CAs.
-	nextCA := newCA(t)
-	cert, key = nextCA.issue(t, serverID, func(c *x509.Certificate) { c.NotAfter = first.Add(time.Hour) })
-	write(t, f.SVIDFile, cert)
-	write(t, f.KeyFile, key)
-	write(t, f.BundleFile, append(append([]byte{}, oldCA.pem...), nextCA.pem...))
+	nextCA := testca.New(t)
+	cert, key = nextCA.Issue(t, serverID, func(c *x509.Certificate) { c.NotAfter = first.Add(time.Hour) })
+	testca.Write(t, f.SVIDFile, cert)
+	testca.Write(t, f.KeyFile, key)
+	testca.Write(t, f.BundleFile, append(append([]byte{}, oldCA.PEM...), nextCA.PEM...))
 	if err := store.Reload(); err != nil {
 		t.Fatal(err)
 	}
@@ -341,8 +231,8 @@ func TestReload(t *testing.T) {
 		t.Fatalf("NotAfter %v, want %v", store.NotAfter(), first.Add(time.Hour))
 	}
 	// A client of the new CA, trusting only it, sees the new certificate and is accepted.
-	nodeCert, nodeKey := nextCA.issue(t, nodeID, nil)
-	node, err := Load(files(t, nodeCert, nodeKey, nextCA.pem))
+	nodeCert, nodeKey := nextCA.Issue(t, nodeID, nil)
+	node, err := Load(testca.Files(t, nodeCert, nodeKey, nextCA.PEM))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,8 +241,8 @@ func TestReload(t *testing.T) {
 	}
 
 	// A failing reload (key not matching) keeps the material.
-	_, otherKey := nextCA.issue(t, serverID, nil)
-	write(t, f.KeyFile, otherKey)
+	_, otherKey := nextCA.Issue(t, serverID, nil)
+	testca.Write(t, f.KeyFile, otherKey)
 	if err := store.Reload(); err == nil {
 		t.Fatal("reload with a mismatched key succeeded")
 	}

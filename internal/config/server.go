@@ -243,7 +243,7 @@ func (b *Bucket) validate(at, trustDomain string, classes map[string]Class, add 
 	if b.MaxObjectBytes <= 0 {
 		add("%s: max_object_bytes must be positive", at)
 	}
-	if _, err := parseSize(b.DiskReserve); err != nil {
+	if _, err := ParseSize(b.DiskReserve); err != nil {
 		add("%s: disk_reserve: %v", at, err)
 	}
 	seen := map[string]bool{}
@@ -371,8 +371,8 @@ func parseDuration(s string) (time.Duration, error) {
 	return total, nil
 }
 
-// parseSize reads "<n><unit>", unit B, KiB, MiB, GiB or TiB, e.g. "20GiB".
-func parseSize(s string) (int64, error) {
+// ParseSize reads "<n><unit>", unit B, KiB, MiB, GiB or TiB, e.g. "20GiB".
+func ParseSize(s string) (int64, error) {
 	m := sizeRE.FindStringSubmatch(s)
 	bad := fmt.Errorf("%q must be a size such as \"20GiB\" (B, KiB, MiB, GiB, TiB)", s)
 	if m == nil {

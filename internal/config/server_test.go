@@ -86,12 +86,12 @@ func TestParseDuration(t *testing.T) {
 
 func TestParseSize(t *testing.T) {
 	for s, want := range map[string]int64{"0B": 0, "1KiB": 1024, "20GiB": 20 << 30, "2TiB": 2 << 40} {
-		if got, err := parseSize(s); err != nil || got != want {
+		if got, err := ParseSize(s); err != nil || got != want {
 			t.Errorf("%q: %v %v", s, got, err)
 		}
 	}
 	for _, s := range []string{"", "20", "20GB", "20gib", "-1GiB", "8388608TiB"} {
-		if _, err := parseSize(s); err == nil {
+		if _, err := ParseSize(s); err == nil {
 			t.Errorf("%q accepted", s)
 		}
 	}
