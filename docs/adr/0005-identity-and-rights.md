@@ -1,6 +1,6 @@
 # ADR 0005 — Identity and rights
 
-Status: Accepted — 2026-10-29. File key names superseded by ADR 0011.
+Status: Accepted — 2026-10-29. File key names superseded by ADR 0011; SVID reload superseded by ADR 0016.
 
 ## Context
 

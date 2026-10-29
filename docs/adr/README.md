@@ -20,3 +20,4 @@ Decision / Consequences. A decision is changed by a new ADR that supersedes the 
 | [0013](0013-internal-error.md) | Internal error answer |
 | [0014](0014-additional-events.md) | Additional events of azukari-server |
 | [0015](0015-key-alphabet.md) | Uppercase letters in object keys |
+| [0016](0016-svid-file-watching.md) | Picking up renewed SVIDs by watching their files |
