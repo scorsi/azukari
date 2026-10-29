@@ -177,7 +177,7 @@ func (e *env) list(t *testing.T) []string {
 
 func (e *env) get(t *testing.T, k string) []byte {
 	t.Helper()
-	b, err := e.c.Get(context.Background(), k)
+	b, err := e.c.Get(context.Background(), k, 1<<30)
 	if err != nil {
 		t.Fatalf("get %s: %v", k, err)
 	}

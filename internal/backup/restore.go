@@ -18,13 +18,21 @@ import (
 
 	backupv1 "github.com/scorsi/azukari/gen/azukari/backup/v1"
 	"github.com/scorsi/azukari/internal/config"
+	"github.com/scorsi/azukari/internal/fastcdc"
 	"github.com/scorsi/azukari/internal/seal"
+)
+
+// Bounds of the objects a restore reads, sealed sizes: a store cannot make it read more.
+const (
+	maxConfig = 4 << 10
+	maxRoot   = 16 << 20 // 34 bytes per metadata chunk: ~490 000 chunks, ~0.5 TiB of metadata
+	maxChunk  = fastcdc.MaxSize + seal.Overhead
 )
 
 // objects is where a restore reads the node's objects from: the store's client, or (M5) a
 // directory holding a copy of the bucket.
 type objects interface {
-	Get(ctx context.Context, key string) ([]byte, error)
+	Get(ctx context.Context, key string, max int64) ([]byte, error)
 }
 
 // fsync makes a restored file or directory durable (test hook: fail a sync).
@@ -75,7 +83,7 @@ func stamp(ns int64) string { return time.Unix(0, ns).UTC().Format(time.RFC3339N
 func checkKey(ctx context.Context, c objects, node string, k *seal.Key) error {
 	ctx, cancel := context.WithTimeout(ctx, RequestTimeout)
 	defer cancel()
-	b, err := c.Get(ctx, node+"/config")
+	b, err := c.Get(ctx, node+"/config", maxConfig)
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
@@ -92,7 +100,7 @@ func openRoot(ctx context.Context, c objects, node string, k *seal.Key, name str
 	}
 	ctx, cancel := context.WithTimeout(ctx, RequestTimeout)
 	defer cancel()
-	sealed, err := c.Get(ctx, node+"/snapshots/"+name)
+	sealed, err := c.Get(ctx, node+"/snapshots/"+name, maxRoot)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot %s: %w", name, err)
 	}
@@ -496,7 +504,7 @@ func (r *restorer) chunk(id []byte) ([]byte, error) {
 	k := r.node + "/" + seal.ChunkPath([32]byte(id))
 	ctx, cancel := context.WithTimeout(r.ctx, RequestTimeout)
 	defer cancel()
-	sealed, err := r.src.Get(ctx, k)
+	sealed, err := r.src.Get(ctx, k, maxChunk)
 	if err != nil {
 		return nil, fmt.Errorf("chunk %s: %w", k, err)
 	}

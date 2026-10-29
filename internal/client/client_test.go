@@ -7,15 +7,21 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
+	azukariv1 "github.com/scorsi/azukari/gen/azukari/v1"
 	"github.com/scorsi/azukari/internal/config"
 	"github.com/scorsi/azukari/internal/logging"
 	"github.com/scorsi/azukari/internal/server"
@@ -136,11 +142,11 @@ func TestRoundTrip(t *testing.T) {
 	if _, err := c.Put(ctx, "node-a/empty", nil); err != nil {
 		t.Fatalf("empty put: %v", err)
 	}
-	got, err := c.Get(ctx, "node-a/chunks/x")
+	got, err := c.Get(ctx, "node-a/chunks/x", 1024)
 	if err != nil || !bytes.Equal(got, body) {
 		t.Fatalf("get: %q %v", got, err)
 	}
-	if got, err := c.Get(ctx, "node-a/empty"); err != nil || len(got) != 0 {
+	if got, err := c.Get(ctx, "node-a/empty", 1024); err != nil || len(got) != 0 {
 		t.Fatalf("empty get: %q %v", got, err)
 	}
 	if got := e.logs.count("request-refused"); got != 0 {
@@ -167,11 +173,11 @@ func TestReasons(t *testing.T) {
 	wantReason(t, err, 409, "object-exists")
 	_, err = c.Put(ctx, "node-a/refs/s", make([]byte, 32))
 	wantReason(t, err, 409, "refs-incomplete")
-	_, err = c.Get(ctx, "node-a/nothing")
+	_, err = c.Get(ctx, "node-a/nothing", 1024)
 	wantReason(t, err, 404, "object-unknown")
 	_, err = c.Missing(ctx, []string{"node-b/x"})
 	wantReason(t, err, 403, "namespace-forbidden")
-	_, err = e.client(t, e.addr, "nope").Get(ctx, "node-a/x")
+	_, err = e.client(t, e.addr, "nope").Get(ctx, "node-a/x", 1024)
 	wantReason(t, err, 404, "bucket-unknown")
 	// 4xx are never retried: one request logged per call above (404 is not a refusal).
 	if got := e.logs.count("request") + e.logs.count("request-refused"); got != 6 {
@@ -196,7 +202,7 @@ func TestRetries(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(e.dir, "backup", "b", "objects", "node-a", "bad"), []byte("garbage"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err = c.Get(ctx, "node-a/bad")
+	_, err = c.Get(ctx, "node-a/bad", 1024)
 	wantReason(t, err, 500, "internal")
 	if got := e.logs.count("request-refused"); got != 2*Attempts {
 		t.Fatalf("500: %d tries, want %d", got-Attempts, Attempts)
@@ -249,7 +255,7 @@ func TestRetryDroppedConnection(t *testing.T) {
 
 	// Beyond Attempts the transport error comes back, not an *Error.
 	addr, _ = proxy(t, e.addr, int32(Attempts))
-	_, err = e.client(t, addr, "backup").Get(ctx, "node-a/x")
+	_, err = e.client(t, addr, "backup").Get(ctx, "node-a/x", 1024)
 	var se *Error
 	if err == nil || errors.As(err, &se) {
 		t.Fatalf("err = %v", err)
@@ -291,5 +297,123 @@ func TestPaging(t *testing.T) {
 	}
 	if got := e.logs.count("request"); got != 4+3+2 { // puts, missing batches, list pages
 		t.Fatalf("%d requests, want 9", got)
+	}
+}
+
+// hostile serves h as the store, with the store's SVID, and returns a client of bucket b.
+func hostile(t *testing.T, h http.HandlerFunc) *Client {
+	t.Helper()
+	b := Backoff
+	Backoff = time.Millisecond
+	t.Cleanup(func() { Backoff = b })
+	e := &env{ca: testca.New(t)}
+	src, err := svid.Load(e.ca.SVID(t, serverID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &http.Server{Handler: h, TLSConfig: src.ServerConfig()}
+	go s.ServeTLS(ln, "", "")
+	t.Cleanup(func() { s.Close() })
+	return e.client(t, ln.Addr().String(), "b")
+}
+
+func TestOversizedAnswers(t *testing.T) {
+	var n atomic.Int32
+	c := hostile(t, func(w http.ResponseWriter, r *http.Request) {
+		n.Add(1)
+		if r.URL.Path == "/v1/b/b/o/declared" {
+			w.Header().Set("Content-Length", strconv.Itoa(maxControl+1<<20))
+		}
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusBadRequest) // an error body is bounded too
+		}
+		chunk := make([]byte, 64<<10)
+		for range (maxControl + 1<<20) / len(chunk) { // streamed, no Content-Length
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+			w.(http.Flusher).Flush()
+		}
+	})
+	ctx := context.Background()
+	if _, err := c.Get(ctx, "big", 1<<20); !errors.Is(err, errTooLarge) {
+		t.Fatalf("streamed body: err = %v", err)
+	}
+	if _, err := c.Get(ctx, "declared", 1<<20); !errors.Is(err, errTooLarge) {
+		t.Fatalf("declared body: err = %v", err)
+	}
+	if _, err := c.Missing(ctx, []string{"node-a/x"}); !errors.Is(err, errTooLarge) {
+		t.Fatalf("error body: err = %v", err)
+	}
+	if _, err := c.Put(ctx, "node-a/x", []byte("x")); !errors.Is(err, errTooLarge) {
+		t.Fatalf("put reply: err = %v", err)
+	}
+	if got := n.Load(); got != 4 { // oversized answers are not retried
+		t.Fatalf("%d requests, want 4", got)
+	}
+}
+
+func TestRedirectsRefused(t *testing.T) {
+	var plain atomic.Int32
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { plain.Add(1) }))
+	t.Cleanup(down.Close)
+	var gets atomic.Int32
+	c := hostile(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/b/b/o/done":
+			gets.Add(1) // a followed PUT -> GET would read 200 here
+		case r.Method == http.MethodGet:
+			http.Redirect(w, r, down.URL+r.URL.Path, http.StatusFound) // HTTPS -> HTTP downgrade
+		default:
+			http.Redirect(w, r, "/v1/b/b/o/done", http.StatusSeeOther)
+		}
+	})
+	ctx := context.Background()
+	_, err := c.Get(ctx, "node-a/x", 1024)
+	wantReason(t, err, http.StatusFound, "")
+	_, err = c.Put(ctx, "node-a/x", []byte("x"))
+	wantReason(t, err, http.StatusSeeOther, "")
+	if plain.Load() != 0 || gets.Load() != 0 {
+		t.Fatalf("redirect followed: %d plain, %d gets", plain.Load(), gets.Load())
+	}
+}
+
+func TestUnexpectedStatus(t *testing.T) {
+	c := hostile(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated) // only PUT may answer 201
+	})
+	_, err := c.Get(context.Background(), "node-a/x", 1024)
+	wantReason(t, err, http.StatusCreated, "")
+}
+
+func TestStalledListPage(t *testing.T) {
+	defer func(d time.Duration) { PageTimeout = d }(PageTimeout)
+	PageTimeout = 100 * time.Millisecond
+	c := hostile(t, func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
+	for _, err := range c.List(context.Background(), "node-a/") {
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("err = %v", err)
+		}
+		return
+	}
+	t.Fatal("no error")
+}
+
+func TestRepeatedCursor(t *testing.T) {
+	var pages atomic.Int32
+	c := hostile(t, func(w http.ResponseWriter, r *http.Request) {
+		pages.Add(1)
+		b, _ := proto.Marshal(&azukariv1.ListResponse{Objects: []*azukariv1.Object{{Key: "node-a/x"}}, Next: "node-a/x"})
+		w.Write(b)
+	})
+	var err error
+	for _, err = range c.List(context.Background(), "node-a/") {
+	}
+	if err == nil || !strings.Contains(err.Error(), "does not advance") || pages.Load() != 2 {
+		t.Fatalf("%d pages, err = %v", pages.Load(), err)
 	}
 }

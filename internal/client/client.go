@@ -31,7 +31,18 @@ var (
 	MissingBatch = 10000
 	// ListLimit is the page size asked of list (ADR 0003).
 	ListLimit uint32 = 10000
+	// PageTimeout bounds one list page, retries included: a store that stalls a page fails the listing.
+	PageTimeout = 2 * time.Minute
 )
+
+// Answer bounds: a hostile store must not make the node read without limit.
+const (
+	maxControl  = 4 << 20 // control replies and refusals (ADR 0003's control body limit)
+	maxPutReply = 4 << 10
+)
+
+// errTooLarge marks an answer over its bound: the store misbehaves, retrying will not help.
+var errTooLarge = errors.New("answer too large")
 
 // Error is a refusal of the store: its status and Error{reason} (ADR 0003, 0013). Reason is
 // empty when the answer carried no Error message.
@@ -52,7 +63,9 @@ type Client struct {
 // store's ID to be cfg's server_id. It speaks HTTP/2 when the store offers it.
 func New(cfg *config.Backup, src *svid.Source) *Client {
 	tr := &http.Transport{TLSClientConfig: src.ClientConfig(cfg.TLS.ServerID), ForceAttemptHTTP2: true}
-	return &Client{http: &http.Client{Transport: tr}, base: cfg.Server + "/v1/b/" + cfg.Bucket}
+	// A redirect could downgrade to plain HTTP or turn a PUT into a GET: the 3xx is a refusal.
+	noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &Client{http: &http.Client{Transport: tr, CheckRedirect: noRedirect}, base: cfg.Server + "/v1/b/" + cfg.Bucket}
 }
 
 // Close closes the idle connections.
@@ -62,15 +75,16 @@ func (c *Client) Close() { c.http.CloseIdleConnections() }
 // retry); other bytes there are an *Error 409 (object-exists, refs-incomplete).
 func (c *Client) Put(ctx context.Context, key string, body []byte) (created bool, err error) {
 	sum := sha256.Sum256(body)
-	code, _, err := c.do(ctx, http.MethodPut, "/o/"+key, body, func(h http.Header) {
+	code, _, err := c.do(ctx, http.MethodPut, "/o/"+key, body, maxPutReply, func(h http.Header) {
 		h.Set("Azukari-Sha256", hex.EncodeToString(sum[:]))
 	})
 	return code == http.StatusCreated, err
 }
 
-// Get returns the object at key, checked against the store's Azukari-Sha256.
-func (c *Client) Get(ctx context.Context, key string) ([]byte, error) {
-	_, resp, err := c.do(ctx, http.MethodGet, "/o/"+key, nil, nil)
+// Get returns the object at key, checked against the store's Azukari-Sha256. A body over max
+// bytes is refused.
+func (c *Client) Get(ctx context.Context, key string, max int64) ([]byte, error) {
+	_, resp, err := c.do(ctx, http.MethodGet, "/o/"+key, nil, max, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -96,14 +110,18 @@ func (c *Client) Missing(ctx context.Context, keys []string) ([]string, error) {
 	return missing, nil
 }
 
-// List yields every object under prefix in key order, one page at a time; it stops at the
-// first error, yielded last.
+// List yields every object under prefix in key order, one page at a time, each within
+// PageTimeout; it stops at the first error, yielded last. A next that does not move past the
+// previous cursor is an error, not a loop.
 func (c *Client) List(ctx context.Context, prefix string) iter.Seq2[*azukariv1.Object, error] {
 	return func(yield func(*azukariv1.Object, error) bool) {
 		req := &azukariv1.ListRequest{Prefix: prefix, Limit: ListLimit}
 		for {
 			var out azukariv1.ListResponse
-			if err := c.control(ctx, "list", req, &out); err != nil {
+			pctx, cancel := context.WithTimeout(ctx, PageTimeout)
+			err := c.control(pctx, "list", req, &out)
+			cancel()
+			if err != nil {
 				yield(nil, err)
 				return
 			}
@@ -113,6 +131,10 @@ func (c *Client) List(ctx context.Context, prefix string) iter.Seq2[*azukariv1.O
 				}
 			}
 			if out.Next == "" {
+				return
+			}
+			if out.Next <= req.StartAfter {
+				yield(nil, fmt.Errorf("list: next %q does not advance past %q", out.Next, req.StartAfter))
 				return
 			}
 			req.StartAfter = out.Next
@@ -125,7 +147,7 @@ func (c *Client) control(ctx context.Context, call string, req, out proto.Messag
 	if err != nil {
 		return err
 	}
-	_, resp, err := c.do(ctx, http.MethodPost, "/"+call, body, func(h http.Header) {
+	_, resp, err := c.do(ctx, http.MethodPost, "/"+call, body, maxControl, func(h http.Header) {
 		h.Set("Content-Type", "application/x-protobuf")
 	})
 	if err != nil {
@@ -144,14 +166,15 @@ type response struct {
 
 // do sends a request until it gets an answer other than 500 or 503, at most Attempts times,
 // waiting Backoff, then twice as long, between tries. A transport error (a connection the
-// store closed beyond its limit, ADR 0012) is retried too; a 4xx never is. Any status >= 300
-// comes back as *Error.
-func (c *Client) do(ctx context.Context, method, path string, body []byte, set func(http.Header)) (int, *response, error) {
+// store closed beyond its limit, ADR 0012) is retried too; a 4xx or an answer over its bound
+// never is. Any status but the call's success ones (PUT 200/201, GET and POST 200) comes back
+// as *Error.
+func (c *Client) do(ctx context.Context, method, path string, body []byte, max int64, set func(http.Header)) (int, *response, error) {
 	wait := Backoff
 	for attempt := 1; ; attempt++ {
-		code, resp, err := c.once(ctx, method, path, body, set)
+		code, resp, err := c.once(ctx, method, path, body, max, set)
 		var se *Error
-		retry := ctx.Err() == nil && (err != nil && !errors.As(err, &se) ||
+		retry := ctx.Err() == nil && (err != nil && !errors.As(err, &se) && !errors.Is(err, errTooLarge) ||
 			code == http.StatusInternalServerError || code == http.StatusServiceUnavailable)
 		if !retry || attempt == Attempts {
 			if err != nil && se == nil {
@@ -168,7 +191,7 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte, set f
 	}
 }
 
-func (c *Client) once(ctx context.Context, method, path string, body []byte, set func(http.Header)) (int, *response, error) {
+func (c *Client) once(ctx context.Context, method, path string, body []byte, max int64, set func(http.Header)) (int, *response, error) {
 	var rd io.Reader
 	if body != nil {
 		rd = bytes.NewReader(body) // sets Content-Length, even 0
@@ -185,11 +208,19 @@ func (c *Client) once(ctx context.Context, method, path string, body []byte, set
 		return 0, nil, err
 	}
 	defer r.Body.Close()
-	data, err := io.ReadAll(r.Body)
+	ok := r.StatusCode == http.StatusOK || method == http.MethodPut && r.StatusCode == http.StatusCreated
+	if !ok {
+		max = maxControl
+	}
+	// Bounded while reading: Content-Length may be absent or lie.
+	data, err := io.ReadAll(io.LimitReader(r.Body, max+1))
 	if err != nil {
 		return 0, nil, err
 	}
-	if r.StatusCode >= 300 {
+	if int64(len(data)) > max {
+		return 0, nil, fmt.Errorf("%w: %d answer over %d bytes", errTooLarge, r.StatusCode, max)
+	}
+	if !ok {
 		e := &Error{Status: r.StatusCode}
 		var m azukariv1.Error
 		if r.Header.Get("Content-Type") == "application/x-protobuf" && proto.Unmarshal(data, &m) == nil {
