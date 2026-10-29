@@ -84,8 +84,8 @@ type Replica struct {
 var (
 	nameRE        = regexp.MustCompile(`^[a-z0-9-]+$`)
 	trustDomainRE = regexp.MustCompile(`^[a-z0-9._-]+$`)
-	// ADR 0003: a key segment is [a-z0-9._-], neither "." nor "..".
-	keySegmentRE = regexp.MustCompile(`^[a-z0-9._-]+$`)
+	// ADR 0003, 0015: a key segment is [A-Za-z0-9._-], neither "." nor "..".
+	keySegmentRE = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 	// hanko's SPIFFE ID path segments (hanko ADR-0004).
 	idSegmentRE = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 	durationRE  = regexp.MustCompile(`^(?:([0-9]+)d)?(?:([0-9]+)h)?(?:([0-9]+)m)?(?:([0-9]+)s)?$`)
@@ -321,7 +321,7 @@ func checkNodeID(id, trustDomain string) error {
 		return err
 	}
 	if !validSegment(host, keySegmentRE) {
-		return errors.New("host segment must be a key segment: [a-z0-9._-], not '.' or '..'")
+		return errors.New("host segment must be a key segment: [A-Za-z0-9._-], not '.' or '..'")
 	}
 	return nil
 }

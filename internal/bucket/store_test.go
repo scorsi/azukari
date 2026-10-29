@@ -54,6 +54,34 @@ func assertClean(t *testing.T, b *Bucket, keys ...string) {
 	}
 }
 
+// ADR 0015: "a" and "A" are two keys (bucket filesystems are case-sensitive, ADR 0004).
+func TestKeysCaseSensitive(t *testing.T) {
+	b := newBucket(t)
+	probe := filepath.Join(b.path, "tmp", "x")
+	must(t, os.WriteFile(probe, nil, 0o600))
+	_, err := os.Stat(filepath.Join(b.path, "tmp", "X"))
+	must(t, os.Remove(probe))
+	if err == nil {
+		t.Skip("case-insensitive filesystem (e.g. macOS APFS); ADR 0004 requires a case-sensitive one")
+	}
+	for _, k := range []string{"n/a", "n/A"} {
+		if created, err := put(b, k, k); !created || err != nil {
+			t.Fatalf("Put(%q) = %v, %v", k, created, err)
+		}
+	}
+	for _, k := range []string{"n/a", "n/A"} {
+		_, rc, err := b.Get(k)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := io.ReadAll(rc)
+		rc.Close()
+		if string(got) != k {
+			t.Fatalf("Get(%q) = %q", k, got)
+		}
+	}
+}
+
 func TestPutCreateRetryConflict(t *testing.T) {
 	b := newBucket(t)
 	if created, err := put(b, "n/chunks/ab/x", "hello"); !created || err != nil {

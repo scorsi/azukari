@@ -116,10 +116,9 @@ func (r *run) run(ctx context.Context, cfg *config.Backup) (string, error) {
 		return "", fmt.Errorf("config: %w", err)
 	}
 
-	// RFC 3339 allows a lowercase t and z; ADR 0003's key alphabet requires them.
 	var rnd [4]byte
 	rand.Read(rnd[:])
-	name := strings.ToLower(r.began.UTC().Format("20060102T150405Z")) + "-" + hex.EncodeToString(rnd[:])
+	name := r.began.UTC().Format("20060102T150405Z") + "-" + hex.EncodeToString(rnd[:]) // ADR 0006, 0015
 
 	if r.meta, err = os.CreateTemp("", "azukari-backup-*"); err != nil {
 		return "", err

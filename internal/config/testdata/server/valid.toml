@@ -24,7 +24,7 @@ disk_reserve = "20GiB"
 mount_point = "/srv/disk-1"
 nodes = [
   "spiffe://example.org/node-a/azukari-backup",
-  "spiffe://example.org/node-b/azukari-backup",
+  "spiffe://example.org/Node-B/azukari-backup",
 ]
 
 [buckets.retention]

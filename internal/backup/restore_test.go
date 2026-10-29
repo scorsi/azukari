@@ -223,7 +223,7 @@ func (e *env) crafted(t *testing.T, entries []*backupv1.Entry) string {
 	if _, err := e.c.Put(ctx, "node-a/"+seal.ChunkPath(id), sealed); err != nil {
 		t.Fatal(err)
 	}
-	const name = "20261029t120000z-0badf00d"
+	const name = "20261029T120000Z-0badf00d"
 	if _, err := e.c.Put(ctx, "node-a/refs/"+name, id[:]); err != nil {
 		t.Fatal(err)
 	}

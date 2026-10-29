@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -237,6 +238,9 @@ func TestRun(t *testing.T) {
 	e := start(t)
 	big := e.makeTree(t)
 	name := e.run(t)
+	if !regexp.MustCompile(`^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$`).MatchString(name) {
+		t.Errorf("snapshot name %q, want yyyymmddThhmmssZ-<8 hex> (ADR 0006)", name)
+	}
 
 	keys := e.list(t)
 	var chunks []string

@@ -267,7 +267,7 @@ func TestRefusals(t *testing.T) {
 		{"sha256 too short", "PUT", "/v1/b/backup/o/node-a/x", data, hexSum(data)[2:], 400, "request-invalid"},
 		{"sha256 mismatch", "PUT", "/v1/b/backup/o/node-a/x", data, hexSum([]byte("else")), 400, "sha256-mismatch"},
 		{"too large", "PUT", "/v1/b/backup/o/node-a/x", big, hexSum(big), 413, "object-too-large"},
-		{"key invalid", "PUT", "/v1/b/backup/o/node-a/Bad", data, hexSum(data), 400, "key-invalid"},
+		{"key invalid", "PUT", "/v1/b/backup/o/node-a/b@d", data, hexSum(data), 400, "key-invalid"},
 		{"foreign namespace", "PUT", "/v1/b/backup/o/node-b/x", data, hexSum(data), 403, "namespace-forbidden"},
 		{"foreign namespace get", "GET", "/v1/b/backup/o/node-b/x", nil, "", 403, "namespace-forbidden"},
 		{"unknown bucket", "PUT", "/v1/b/nope/o/node-a/x", data, hexSum(data), 404, "bucket-unknown"},

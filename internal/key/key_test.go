@@ -8,7 +8,7 @@ import (
 
 func TestCheck(t *testing.T) {
 	for _, k := range []string{
-		"a", "node-1/chunks/ab/abcdef", "n/refs/2026-10-29t12.00", "x_y/.hidden/..x/x..", "a/" + strings.Repeat("b", MaxLen-2),
+		"a", "A", "Node-1/Snapshots/20261029T120000Z-0badf00d", "node-1/chunks/ab/abcdef", "n/refs/2026-10-29t12.00", "x_y/.hidden/..x/x..", "a/" + strings.Repeat("b", MaxLen-2),
 	} {
 		if err := Check(k); err != nil {
 			t.Errorf("Check(%q) = %v, want nil", k, err)
@@ -16,7 +16,7 @@ func TestCheck(t *testing.T) {
 	}
 	for _, k := range []string{
 		"", strings.Repeat("a", MaxLen+1), "/a", "a/", "a//b", ".", "..", "a/./b", "a/../b", "../a",
-		"A", "a b", "a\\b", "a\x00", "é", "a/b?c", "a%2fb",
+		"a b", "a\\b", "a\x00", "é", "a/b?c", "a%2fb",
 	} {
 		if err := Check(k); !errors.Is(err, ErrInvalid) {
 			t.Errorf("Check(%q) = %v, want ErrInvalid", k, err)
