@@ -16,7 +16,7 @@
   };
 
   outputs =
-    inputs@{ flake-parts, ... }:
+    inputs@{ self, flake-parts, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [
         "aarch64-darwin"
@@ -26,10 +26,36 @@
 
       imports = [ inputs.treefmt-nix.flakeModule ];
 
+      flake.nixosModules = rec {
+        azukari-server = import ./nix/module.nix self;
+        default = azukari-server;
+      };
+
       perSystem =
-        { pkgs, lib, ... }:
+        {
+          pkgs,
+          lib,
+          system,
+          ...
+        }:
         let
           azukari = pkgs.callPackage ./nix/package.nix { };
+          # The example module configuration on a Linux host, whatever system evaluates it.
+          linux = if lib.hasSuffix "-linux" system then system else "aarch64-linux";
+          nixosFor =
+            host: extra:
+            inputs.nixpkgs.lib.nixosSystem {
+              modules = [
+                self.nixosModules.azukari-server
+                ./nix/example.nix
+                extra
+                { nixpkgs.hostPlatform = host; }
+              ];
+            };
+          evaluated = (nixosFor linux { }).config;
+          unit = evaluated.systemd.services.azukari-server;
+          moduleConfig =
+            extra: (nixosFor system extra).config.environment.etc."azukari/azukari-server.toml".source;
         in
         {
           packages = {
@@ -37,9 +63,51 @@
             default = azukari;
           };
 
-          # The package's check phase runs `go vet` then `go test` (nix/package.nix).
+          # The package's check phase runs `go vet` then `go test` (nix/package.nix). `module-eval`
+          # evaluates the module on every system, macOS included; on Linux, `module` builds the file
+          # (so `azukari-server check` runs on the module's output) and `module-typo` proves an
+          # unknown key fails that build.
           checks = {
             inherit azukari;
+
+            # Forces the unit at eval time; the store paths are dropped so nothing is built.
+            module-eval =
+              let
+                sc = unit.serviceConfig;
+              in
+              assert
+                lib.hasSuffix "/bin/azukari-server run /etc/azukari/azukari-server.toml" sc.ExecStart
+                && lib.hasSuffix "kill -HUP $MAINPID" sc.ExecReload
+                && sc.User == "azukari"
+                && sc.Group == "azukari"
+                && sc.RuntimeDirectory == "azukari-server"
+                && sc.Restart == "on-failure"
+                && sc.ReadWritePaths == [ "-/srv/disk-1/azukari/backup" ]
+                && sc.LogRateLimitIntervalSec == "30s"
+                && sc.LogRateLimitBurst == 30000
+                && sc.ProtectSystem == "strict"
+                && sc.CapabilityBoundingSet == ""
+                && sc.NoNewPrivileges
+                && !(sc ? DynamicUser);
+              # A bucket's disk may be absent at start (ADR 0004); no firewall opening.
+              assert !(lib.hasInfix "RequiresMountsFor" (builtins.toJSON unit.unitConfig));
+              assert evaluated.networking.firewall.allowedTCPPorts == [ ];
+              assert
+                evaluated.users.users.azukari.isSystemUser
+                && evaluated.users.users.azukari.group == "azukari"
+                && evaluated.users.groups ? azukari-admin;
+              pkgs.runCommand "azukari-module-eval" { } ''
+                echo ${
+                  lib.escapeShellArg (
+                    builtins.unsafeDiscardStringContext (
+                      builtins.toJSON {
+                        unit = unit.serviceConfig;
+                        config = evaluated.environment.etc."azukari/azukari-server.toml".source.name;
+                      }
+                    )
+                  )
+                } > $out
+              '';
 
             # The committed gen/ is what `buf generate` produces from proto/.
             proto-generated =
@@ -86,6 +154,12 @@
                   fi
                   touch $out
                 '';
+          }
+          // lib.optionalAttrs (lib.hasSuffix "-linux" system) {
+            module = moduleConfig { };
+            module-typo = pkgs.testers.testBuildFailure (moduleConfig {
+              services.azukari-server.settings.listne = [ "[::]:8443" ];
+            });
           };
 
           devShells.default = pkgs.mkShellNoCC {
