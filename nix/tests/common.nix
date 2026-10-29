@@ -51,8 +51,17 @@ in
 {
   inherit ca metrics id;
 
-  # `${client} <identity> <method> <key> [body]`, see client.py.
-  client = "${pkgs.python3.interpreter} ${./client.py} ${ca}";
+  # `${nu "<test>.nu"} <step> [args]`: one step of a test's Nushell script (this directory, beside
+  # client.nu and common.nu), the client's tools on PATH, the test CA in $CA, /metrics at $METRICS.
+  nu =
+    script:
+    "PATH=${
+      pkgs.lib.makeBinPath [
+        pkgs.curl
+        pkgs.openssl
+        pkgs.coreutils
+      ]
+    }:$PATH CA=${ca} METRICS=${metrics} ${pkgs.nushell}/bin/nu ${./.}/${script}";
 
   # The store: the module with one backup bucket granted to node-a and node-b, on its own extra
   # virtual disk mounted at its mount_point, `nofail` (ADR 0004, 0010); the module orders the store

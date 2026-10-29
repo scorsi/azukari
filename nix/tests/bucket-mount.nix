@@ -4,7 +4,7 @@
 args@{ pkgs, ... }:
 let
   t = import ./common.nix args;
-  curl = "${pkgs.curl}/bin/curl -sf http://${t.metrics}/metrics";
+  nu = t.nu "bucket-mount.nu";
 in
 pkgs.testers.runNixOSTest {
   name = "azukari-bucket-mount";
@@ -49,51 +49,19 @@ pkgs.testers.runNixOSTest {
   };
 
   testScript = ''
-    def call(bucket, method, key, body=None):
-        arg = "" if body is None else f" '{body}'"
-        return machine.succeed(f"BUCKET={bucket} ${t.client} node-a {method} {key}{arg}").strip()
-
-    def logged(event, bucket):
-        machine.wait_until_succeeds(
-            "journalctl _SYSTEMD_UNIT=azukari-server.service -o cat"
-            f" | grep -F '\"event\":\"{event}\"' | grep -F '\"bucket\":\"{bucket}\"'"
-        )
-
-    def available(bucket, value):
-        machine.wait_until_succeeds(
-            "${curl} | grep -E '^azukari_bucket_available\\{([^}]*,)?bucket=\""
-            + bucket + "\"(,[^}]*)?\\} " + value + "$'"
-        )
-
-    # No restart: the store starts after srv-disk1.mount (After=), so its first boot creates backup.
     machine.wait_for_open_port(8443, "127.0.0.1")
-    logged("bucket-created", "backup")
+    machine.succeed("${nu} ready")
 
     with subtest("archive's disk is not mounted: 503, nothing on the root filesystem"):
-        machine.fail("mountpoint -q /srv/disk2")
-        logged("bucket-unavailable", "archive")
-        assert call("archive", "PUT", "node-a/chunks/c1", "one") == "503 bucket-unavailable"
-        assert call("archive", "GET", "node-a/chunks/c1") == "503 bucket-unavailable"
-        machine.succeed("test -d /srv/disk2 && test -z \"$(ls -A /srv/disk2)\"")
+        machine.succeed("${nu} unmounted")
 
     with subtest("the other bucket serves"):
-        assert call("backup", "PUT", "node-a/chunks/c1", "one") == "201"
-        assert call("backup", "GET", "node-a/chunks/c1") == "200 one"
-        available("backup", "1")
-        available("archive", "0")
+        machine.succeed("${nu} other-serves")
 
     with subtest("mounted and restarted, archive is created on its disk and serves"):
-        machine.succeed("systemctl start srv-disk2.mount")
-        machine.succeed("mountpoint -q /srv/disk2")
-        machine.succeed("systemctl restart azukari-server")
+        machine.succeed("${nu} mount")
         machine.wait_for_open_port(8443, "127.0.0.1")
-        logged("bucket-created", "archive")
-        machine.succeed("test \"$(cat /srv/disk2/azukari/archive/FORMAT)\" = 1")
-        assert call("archive", "PUT", "node-a/chunks/c1", "two") == "201"
-        assert call("archive", "GET", "node-a/chunks/c1") == "200 two"
-        assert call("backup", "GET", "node-a/chunks/c1") == "200 one"
-        available("archive", "1")
-        available("backup", "1")
+        machine.succeed("${nu} mounted")
 
     ${t.validate "machine"}
   '';
