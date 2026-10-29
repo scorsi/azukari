@@ -100,24 +100,13 @@ type run struct {
 type skipError struct{ error }
 
 func (r *run) run(ctx context.Context, cfg *config.Backup) (string, error) {
-	src, err := svid.Load(cfg.TLS.TLS)
+	node, k, c, err := connect(cfg)
 	if err != nil {
 		return "", err
 	}
-	_, node, err := src.ID()
-	if err != nil {
-		return "", err
-	}
-	if err := key.Check(node); err != nil {
-		return "", fmt.Errorf("own SVID host %q is not a namespace: %w", node, err)
-	}
-	r.node = node
-	if r.key, err = seal.LoadKey(cfg.DataKeyFile); err != nil {
-		return "", fmt.Errorf("data_key_file: %w", err)
-	}
-	r.cdc = fastcdc.New(nil, r.key.GearTable())
-	r.c = client.New(cfg, src)
+	r.node, r.key, r.c = node, k, c
 	defer r.c.Close()
+	r.cdc = fastcdc.New(nil, r.key.GearTable())
 
 	// A different key check there means another data key: refuse before any upload.
 	if _, err := r.put(ctx, node+"/config", r.key.Config()); err != nil {
@@ -443,6 +432,24 @@ func (r *run) recover(ctx context.Context, ids [][32]byte) error {
 		return fmt.Errorf("refs: the store lost %d chunks this run cannot read again (files changed since)", len(lost))
 	}
 	return nil
+}
+
+// connect reads the node's namespace from its SVID and its data key, and opens a client.
+func connect(cfg *config.Backup) (node string, k *seal.Key, c *client.Client, err error) {
+	src, err := svid.Load(cfg.TLS.TLS)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	if _, node, err = src.ID(); err != nil {
+		return "", nil, nil, err
+	}
+	if err := key.Check(node); err != nil {
+		return "", nil, nil, fmt.Errorf("own SVID host %q is not a namespace: %w", node, err)
+	}
+	if k, err = seal.LoadKey(cfg.DataKeyFile); err != nil {
+		return "", nil, nil, fmt.Errorf("data_key_file: %w", err)
+	}
+	return node, k, client.New(cfg, src), nil
 }
 
 func (r *run) chunkKey(id [32]byte) string { return r.node + "/" + seal.ChunkPath(id) }
