@@ -1,6 +1,6 @@
 # ADR 0009 — Observability
 
-Status: Accepted — 2026-10-29. Events added by ADR 0014.
+Status: Accepted — 2026-10-29. Events added by ADR 0014 and ADR 0019.
 
 ## Context
 

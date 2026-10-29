@@ -1,6 +1,6 @@
 # ADR 0006 — Backup format
 
-Status: Accepted — 2026-10-29. Key file name superseded by ADR 0011 (`data_key_file`).
+Status: Accepted — 2026-10-29. Key file name superseded by ADR 0011 (`data_key_file`); erratum on the chunk overhead (42 bytes).
 
 ## Context
 
@@ -79,7 +79,7 @@ again and must equal its identifier. zstd is kept only when it saves space.
 ### Chunking
 
 FastCDC, minimum 256 KiB, target 1 MiB, maximum 4 MiB; its gear table is derived from the
-gear subkey. A chunk object is at most 4 MiB plus 41 bytes.
+gear subkey. A chunk object is at most 4 MiB plus 42 bytes (erratum 2026-10-29: version 1 + nonce 24 + compression 1 + tag 16; the text said 41).
 
 ### Snapshot
 

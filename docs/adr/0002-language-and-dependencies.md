@@ -1,6 +1,6 @@
 # ADR 0002 — Language and dependencies
 
-Status: Accepted — 2026-10-29
+Status: Accepted — 2026-10-29. Module list extended by ADR 0018.
 
 ## Context
 

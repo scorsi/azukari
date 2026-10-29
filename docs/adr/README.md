@@ -21,3 +21,6 @@ Decision / Consequences. A decision is changed by a new ADR that supersedes the 
 | [0014](0014-additional-events.md) | Additional events of azukari-server |
 | [0015](0015-key-alphabet.md) | Uppercase letters in object keys |
 | [0016](0016-svid-file-watching.md) | Picking up renewed SVIDs by watching their files |
+| [0017](0017-backup-paths-root.md) | No `/` among the backed-up paths |
+| [0018](0018-golang-x-sys.md) | `golang.org/x/sys` for restore |
+| [0019](0019-backup-events.md) | Events of azukari-backup |

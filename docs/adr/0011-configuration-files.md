@@ -1,6 +1,6 @@
 # ADR 0011 — Configuration of the TLS files and of azukari-backup
 
-Status: Accepted — 2026-10-29. Supersedes the file key names of ADR 0005 (Decision, Files) and the name `key_file` of ADR 0006 (Decision, Key).
+Status: Accepted — 2026-10-29. Supersedes the file key names of ADR 0005 (Decision, Files) and the name `key_file` of ADR 0006 (Decision, Key). `paths` restricted by ADR 0017.
 
 ## Context
 
