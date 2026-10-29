@@ -1,0 +1,184 @@
+// Package bucket holds a bucket's layout on disk (ADR 0004): FORMAT, objects/, tmp/ and the
+// object header.
+package bucket
+
+import (
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
+)
+
+// formatContent is FORMAT's whole content: layout version 1 (ADR 0004).
+const formatContent = "1\n"
+
+// State is a bucket's state after Open.
+type State int
+
+const (
+	// Unavailable: Open's error says why; the bucket answers 503 bucket-unavailable.
+	Unavailable State = iota
+	// Available: FORMAT was there and valid.
+	Available
+	// Created: the layout was created now; the caller logs bucket-created, then serves it.
+	Created
+)
+
+func (s State) String() string {
+	return [...]string{"unavailable", "available", "created"}[s]
+}
+
+// Open applies ADR 0004's start decisions to the bucket at path, which must live on the
+// mount mountPoint, then empties tmp/. A non-nil error always comes with Unavailable and is
+// the reason the caller logs. isMount is IsMountPoint outside unit tests.
+func Open(path, mountPoint string, isMount func(string) (bool, error)) (State, error) {
+	switch data, err := os.ReadFile(filepath.Join(path, "FORMAT")); {
+	case err == nil && string(data) == formatContent:
+		if err := emptyDir(filepath.Join(path, "tmp")); err != nil {
+			return Unavailable, err
+		}
+		return Available, nil
+	case err == nil:
+		return Unavailable, fmt.Errorf("%s/FORMAT holds %q, want %q", path, data, formatContent)
+	case !errors.Is(err, fs.ErrNotExist):
+		return Unavailable, err
+	}
+
+	// No FORMAT: create only on the bucket's own, mounted, filesystem.
+	if ok, err := isMount(mountPoint); err != nil {
+		return Unavailable, fmt.Errorf("mount_point %s: %w", mountPoint, err)
+	} else if !ok {
+		return Unavailable, fmt.Errorf("mount_point %s is not a mount point", mountPoint)
+	}
+	if err := checkUnder(path, mountPoint); err != nil {
+		return Unavailable, err
+	}
+	entries, err := os.ReadDir(path)
+	switch {
+	case err != nil && !errors.Is(err, fs.ErrNotExist):
+		return Unavailable, err
+	case len(entries) > 0:
+		return Unavailable, fmt.Errorf("%s holds files but no FORMAT: never adopted", path)
+	}
+	if err := create(path); err != nil {
+		return Unavailable, fmt.Errorf("create %s: %w", path, err)
+	}
+	return Created, nil
+}
+
+// IsMountPoint reports whether dir is on another device than its parent ("/" always is).
+func IsMountPoint(dir string) (bool, error) {
+	var st, parent syscall.Stat_t
+	if err := syscall.Stat(dir, &st); err != nil {
+		return false, err
+	}
+	if err := syscall.Stat(filepath.Join(dir, ".."), &parent); err != nil {
+		return false, err
+	}
+	return st.Dev != parent.Dev || st.Ino == parent.Ino, nil
+}
+
+// checkUnder refuses a path that is not strictly under mountPoint, lexically or once the
+// symbolic links of its longest existing prefix are resolved.
+func checkUnder(path, mountPoint string) error {
+	if !filepath.IsAbs(path) || !strictlyUnder(filepath.Clean(path), filepath.Clean(mountPoint)) {
+		return fmt.Errorf("path %s is not under mount_point %s", path, mountPoint)
+	}
+	mp, err := filepath.EvalSymlinks(mountPoint)
+	if err != nil {
+		return err
+	}
+	existing, rest := filepath.Clean(path), ""
+	for {
+		real, err := filepath.EvalSymlinks(existing)
+		if err == nil {
+			if resolved := filepath.Join(real, rest); !strictlyUnder(resolved, mp) {
+				return fmt.Errorf("path %s resolves to %s, not under mount_point %s", path, resolved, mp)
+			}
+			return nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		existing, rest = filepath.Dir(existing), filepath.Join(filepath.Base(existing), rest)
+	}
+}
+
+func strictlyUnder(p, dir string) bool {
+	return p != dir && strings.HasPrefix(p, strings.TrimSuffix(dir, "/")+"/")
+}
+
+// create makes path (and its missing parents), objects/, tmp/, then FORMAT last, each
+// fsynced in its parent directory.
+func create(path string) error {
+	if err := MkdirAllSync(path); err != nil {
+		return err
+	}
+	for _, d := range []string{"objects", "tmp"} {
+		if err := MkdirAllSync(filepath.Join(path, d)); err != nil {
+			return err
+		}
+	}
+	f, err := os.OpenFile(filepath.Join(path, "FORMAT"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = f.WriteString(formatContent)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	return syncDir(path)
+}
+
+// MkdirAllSync creates dir and its missing parents, fsyncing each new directory's parent.
+func MkdirAllSync(dir string) error {
+	if fi, err := os.Stat(dir); err == nil {
+		if !fi.IsDir() {
+			return &fs.PathError{Op: "mkdir", Path: dir, Err: syscall.ENOTDIR}
+		}
+		return nil
+	}
+	parent := filepath.Dir(dir)
+	if err := MkdirAllSync(parent); err != nil {
+		return err
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+		return err
+	}
+	return syncDir(parent)
+}
+
+func syncDir(dir string) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	err = f.Sync()
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+// emptyDir removes everything in dir: tmp/ only ever holds unfinished writes.
+func emptyDir(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}

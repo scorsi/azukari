@@ -18,6 +18,7 @@ buildGoModule {
       (lib.fileset.maybeMissing ../go.sum)
       (lib.fileset.fileFilter (f: f.hasExt "go") ../.)
       ../internal/config/testdata
+      ../internal/bucket/testdata
     ];
   };
 
