@@ -150,24 +150,27 @@ func load(f config.TLS) (*material, error) {
 
 // ServerConfig requires a client SVID from the trust domain, verified against the current
 // bundle with client auth; the certificate served is the current one, renewed files being
-// picked up before each handshake.
+// picked up before each handshake. A handshake uses one material from start to end: a swap
+// during it serves the next one (ADR 0016).
 func (s *Source) ServerConfig() *tls.Config {
-	return &tls.Config{
-		GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
-			s.refresh()
-			return nil, nil // this config, now reading the refreshed material
-		},
+	cfg := &tls.Config{
 		MinVersion: tls.VersionTLS13,
 		NextProtos: []string{"h2", "http/1.1"},
-		ClientAuth: tls.RequireAnyClientCert, // verified in VerifyConnection, against the current bundle
-		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
-			return &s.cur.Load().cert, nil
-		},
-		VerifyConnection: func(cs tls.ConnectionState) error {
-			_, _, err := Verify(cs.PeerCertificates, s.cur.Load().roots, x509.ExtKeyUsageClientAuth, s.files.TrustDomain)
-			return err
-		},
+		ClientAuth: tls.RequireAnyClientCert, // verified in VerifyConnection, against the handshake's bundle
 	}
+	cfg.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) {
+		s.refresh()
+		m := s.cur.Load()
+		c := cfg.Clone()
+		c.GetConfigForClient = nil
+		c.Certificates = []tls.Certificate{m.cert}
+		c.VerifyConnection = func(cs tls.ConnectionState) error {
+			_, _, err := Verify(cs.PeerCertificates, m.roots, x509.ExtKeyUsageClientAuth, s.files.TrustDomain)
+			return err
+		}
+		return c, nil
+	}
+	return cfg
 }
 
 // ClientConfig presents the current SVID and requires the server's ID to equal serverID;

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -341,5 +342,283 @@ func TestWatch(t *testing.T) {
 	served()
 	if len(reports) != 2 {
 		t.Fatalf("unchanged files reloaded again: %v", reports)
+	}
+}
+
+// node loads a client SVID issued by ca, trusting bundle.
+func node(t *testing.T, ca *testca.CA, bundle []byte) *Source {
+	t.Helper()
+	cert, key := ca.Issue(t, nodeID, nil)
+	s, err := Load(testca.Files(t, cert, key, bundle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func concat(bundles ...[]byte) []byte {
+	var b []byte
+	for _, x := range bundles {
+		b = append(b, x...)
+	}
+	return b
+}
+
+// TestWatchBundle replaces the CA as the internal CA does, with real verification on both
+// sides: a new bundle verifies new handshakes (ADR 0005, 0016).
+func TestWatchBundle(t *testing.T) {
+	oldCA, newCA := testca.New(t), testca.New(t)
+	cert, key := oldCA.Issue(t, serverID, nil)
+	f := testca.Files(t, cert, key, oldCA.PEM)
+	store, err := Load(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reports []error
+	store.OnReload = func(err error) { reports = append(reports, err) }
+	srvCfg := store.ServerConfig()
+
+	// These two trust both CAs: a refusal is the server's.
+	oldNode, newNode := node(t, oldCA, concat(oldCA.PEM, newCA.PEM)), node(t, newCA, concat(oldCA.PEM, newCA.PEM))
+	// This one trusts only the new CA: accepted means the server serves the new SVID.
+	newOnly := node(t, newCA, newCA.PEM)
+	want := func(step string, n *Source, accepted bool, refusedBy string) {
+		t.Helper()
+		srvErr, cliErr, _ := handshake(t, srvCfg, n.ClientConfig(serverID))
+		switch {
+		case accepted && (srvErr != nil || cliErr != nil):
+			t.Fatalf("%s: server %v, client %v", step, srvErr, cliErr)
+		case !accepted && refusedBy == "server" && (srvErr == nil || !strings.Contains(srvErr.Error(), "unknown authority")):
+			t.Fatalf("%s: server err = %v, want unknown authority", step, srvErr)
+		case !accepted && refusedBy == "client" && (cliErr == nil || !strings.Contains(cliErr.Error(), "unknown authority")):
+			t.Fatalf("%s: client err = %v, want unknown authority", step, cliErr)
+		}
+	}
+
+	want("start", oldNode, true, "")
+	want("start", newNode, false, "server")
+	want("start", newOnly, false, "client")
+
+	// The bundle alone grows to trust both CAs: clients of the new CA are accepted.
+	rotate(t, f.BundleFile, concat(oldCA.PEM, newCA.PEM))
+	want("bundle grown", newNode, true, "")
+	want("bundle grown", oldNode, true, "")
+	if len(reports) != 1 || reports[0] != nil {
+		t.Fatalf("bundle grown: reports %v", reports)
+	}
+
+	// The CA rolls: SVID, bundle (new CA only), key.pem last.
+	cert, key = newCA.Issue(t, serverID, nil)
+	rotate(t, f.SVIDFile, cert)
+	rotate(t, f.BundleFile, newCA.PEM)
+	// Caught between the renames: the previous SVID and bundle stay whole.
+	want("half-rotated", oldNode, true, "")
+	want("half-rotated", newNode, true, "")
+	want("half-rotated", newOnly, false, "client")
+	if len(reports) != 2 || reports[1] == nil {
+		t.Fatalf("half-rotated: reports %v, want one failure", reports)
+	}
+	rotate(t, f.KeyFile, key)
+	want("rotated", newOnly, true, "")
+	want("rotated", newNode, true, "")
+	want("rotated", oldNode, false, "server")
+	if len(reports) != 3 || reports[2] != nil {
+		t.Fatalf("rotated: reports %v, want one success", reports)
+	}
+}
+
+// TestWatchMalformedBundle: a bundle that does not parse keeps the previous material and is
+// reported once per change of the files.
+func TestWatchMalformedBundle(t *testing.T) {
+	ca := testca.New(t)
+	f := ca.SVID(t, serverID)
+	store, err := Load(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reports []error
+	store.OnReload = func(err error) { reports = append(reports, err) }
+	srvCfg := store.ServerConfig()
+	n := node(t, ca, ca.PEM)
+	ok := func(step string) {
+		t.Helper()
+		if srvErr, cliErr, _ := handshake(t, srvCfg, n.ClientConfig(serverID)); srvErr != nil || cliErr != nil {
+			t.Fatalf("%s: server %v, client %v", step, srvErr, cliErr)
+		}
+	}
+	b, _ := pem.Decode(ca.PEM)
+	truncated := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: b.Bytes[:len(b.Bytes)/2]})
+
+	for i, bad := range [][]byte{truncated, []byte("garbage")} {
+		rotate(t, f.BundleFile, bad)
+		for range 3 {
+			ok("malformed bundle")
+		}
+		if len(reports) != i+1 || reports[i] == nil || !strings.Contains(reports[i].Error(), "no certificate") {
+			t.Fatalf("malformed bundle %d: reports %v, want one more failure", i, reports)
+		}
+	}
+	if err := store.Reload(); err == nil || len(reports) != 3 {
+		t.Fatalf("Reload: %v, reports %v (SIGHUP reports every time)", err, reports)
+	}
+	rotate(t, f.BundleFile, ca.PEM)
+	ok("bundle restored")
+	if len(reports) != 4 || reports[3] != nil {
+		t.Fatalf("restored: reports %v", reports)
+	}
+}
+
+// TestSwapDuringHandshake: a swap landing between the certificate the server sent and the
+// client's certificate does not change the material of that handshake (ADR 0016: open
+// connections keep their handshake, a new bundle verifies new handshakes).
+func TestSwapDuringHandshake(t *testing.T) {
+	oldCA, newCA := testca.New(t), testca.New(t)
+	f := oldCA.SVID(t, serverID)
+	store, err := Load(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srvCfg := store.ServerConfig()
+	n := node(t, oldCA, oldCA.PEM)
+	cli := n.ClientConfig(serverID)
+	cli.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+		cert, key := newCA.Issue(t, serverID, nil)
+		rotate(t, f.SVIDFile, cert)
+		rotate(t, f.BundleFile, newCA.PEM)
+		rotate(t, f.KeyFile, key)
+		if err := store.Reload(); err != nil {
+			t.Error(err)
+		}
+		return &cli.Certificates[0], nil
+	}
+	if srvErr, cliErr, _ := handshake(t, srvCfg, cli); srvErr != nil || cliErr != nil {
+		t.Fatalf("handshake begun on the old material: server %v, client %v", srvErr, cliErr)
+	}
+	// The next handshake uses the new material.
+	if srvErr, _, _ := handshake(t, srvCfg, n.ClientConfig(serverID)); srvErr == nil {
+		t.Fatal("old CA's client accepted after the swap")
+	}
+}
+
+// TestConcurrentRenewal runs handshakes while the files are replaced (staged, key.pem last)
+// and Reload is called; run with -race. Both CAs stay trusted, so every handshake succeeds
+// whatever material it lands on, half-rotated files included.
+func TestConcurrentRenewal(t *testing.T) {
+	cas := []*testca.CA{testca.New(t), testca.New(t)}
+	bundle := concat(cas[0].PEM, cas[1].PEM)
+	var pairs [2][2][]byte
+	for i, ca := range cas {
+		pairs[i][0], pairs[i][1] = ca.Issue(t, serverID, nil)
+	}
+	f := testca.Files(t, pairs[0][0], pairs[0][1], bundle)
+	store, err := Load(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var reloads, failures int
+	store.OnReload = func(err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if reloads++; err != nil {
+			failures++
+		}
+	}
+	srvCfg := store.ServerConfig()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			c, err := lis.Accept()
+			if err != nil {
+				return
+			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				defer c.Close()
+				tc := tls.Server(c, srvCfg)
+				err := tc.Handshake()
+				if err == nil {
+					_, err = tc.Write([]byte{1})
+				}
+				if err != nil {
+					t.Errorf("server: %v", err)
+				}
+			}()
+		}
+	}()
+
+	clients := []*Source{node(t, cas[0], bundle), node(t, cas[1], bundle)}
+	stop := make(chan struct{})
+	var workers sync.WaitGroup
+	for w := range 8 {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			cli := clients[w%2].ClientConfig(serverID)
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				c, err := net.Dial("tcp", lis.Addr().String())
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				tc := tls.Client(c, cli)
+				err = tc.Handshake()
+				if err == nil {
+					_, err = tc.Read(make([]byte, 1))
+				}
+				c.Close()
+				if err != nil {
+					t.Errorf("client: %v", err)
+				}
+			}
+		}()
+	}
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				store.Reload() // fails while half-rotated: the previous material stays
+				store.NotAfter()
+				store.ID()
+			}
+		}
+	}()
+	for i := range 40 {
+		p := pairs[(i+1)%2]
+		rotate(t, f.SVIDFile, p[0])
+		time.Sleep(time.Millisecond)
+		rotate(t, f.KeyFile, p[1])
+		time.Sleep(time.Millisecond)
+	}
+	close(stop)
+	workers.Wait()
+	lis.Close()
+	wg.Wait()
+
+	// The last pair is pairs[0]: the next handshake serves it.
+	only := node(t, cas[0], cas[0].PEM)
+	if srvErr, cliErr, _ := handshake(t, srvCfg, only.ClientConfig(serverID)); srvErr != nil || cliErr != nil {
+		t.Fatalf("after renewals: server %v, client %v", srvErr, cliErr)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if reloads <= failures {
+		t.Fatalf("%d reloads, %d failed", reloads, failures)
 	}
 }
