@@ -43,13 +43,14 @@ type Server struct {
 	src     *svid.Source
 	buckets map[string]*served
 	granted map[string]bool // IDs in some bucket's nodes: any other ID gets 403 on every request
-	// OnSnapshot, when set before Serve, is called, from concurrent requests, after each new
-	// snapshot root is stored:
-	// the hook for azukari_last_snapshot_timestamp_seconds (ADR 0009).
+	// OnSnapshot is called, from concurrent requests, after each new snapshot root is stored.
+	// New sets it to the azukari_last_snapshot_timestamp_seconds update (ADR 0009).
 	OnSnapshot func(bucket, namespace string, at time.Time)
+	m          metrics
 }
 
 type served struct {
+	path  string
 	nodes map[string]bool
 	b     *bucket.Bucket // nil: unavailable since start (ADR 0004)
 }
@@ -57,13 +58,15 @@ type served struct {
 // New opens every bucket (ADR 0004), logging bucket-created and bucket-unavailable. isMount
 // is bucket.IsMountPoint outside tests.
 func New(cfg *config.Server, src *svid.Source, log *slog.Logger, isMount func(string) (bool, error)) (*Server, error) {
-	s := &Server{log: log, src: src, buckets: map[string]*served{}, granted: map[string]bool{}}
+	s := &Server{log: log, src: src, buckets: map[string]*served{}, granted: map[string]bool{},
+		m: metrics{requests: map[reqKey]uint64{}, received: map[string]uint64{}, snapshots: map[nsKey]int64{}}}
+	s.OnSnapshot = s.recordSnapshot
 	for _, c := range cfg.Buckets {
 		reserve, err := config.ParseSize(c.DiskReserve)
 		if err != nil {
 			return nil, err
 		}
-		sb := &served{nodes: map[string]bool{}}
+		sb := &served{path: c.Path, nodes: map[string]bool{}}
 		for _, id := range c.Nodes {
 			sb.nodes[id] = true
 			s.granted[id] = true
@@ -78,6 +81,7 @@ func New(cfg *config.Server, src *svid.Source, log *slog.Logger, isMount func(st
 			sb.b = bucket.New(c.Path, c.MaxObjectBytes, reserve)
 		}
 		s.buckets[c.Name] = sb
+		s.seedSnapshots(c.Name, sb)
 	}
 	return s, nil
 }
@@ -95,6 +99,7 @@ func (s *Server) Serve(ctx context.Context, lns []net.Listener) error {
 		HTTP2:             &http.HTTP2Config{MaxConcurrentStreams: MaxStreams},
 		ErrorLog: logging.Std(s.log, func(line string) string {
 			if strings.HasPrefix(line, handshakeError) {
+				s.handshakeError()
 				return "tls-handshake-error"
 			}
 			return "http-error"

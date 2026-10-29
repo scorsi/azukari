@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -17,6 +18,9 @@ import (
 	"github.com/scorsi/azukari/internal/server"
 	"github.com/scorsi/azukari/internal/svid"
 )
+
+// version is set by the Nix build (-X main.version=…): azukari_build_info.
+var version = "dev"
 
 const usage = `usage: azukari-server check|run <config.toml>
 
@@ -54,6 +58,15 @@ func run(cfg *config.Server, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// The loopback /metrics listener, plain HTTP: the only unauthenticated port (ADR 0005, 0009).
+	mln, err := net.Listen("tcp", cfg.ListenMetrics)
+	if err != nil {
+		return err
+	}
+	msrv := &http.Server{Handler: srv.MetricsHandler(version), ReadHeaderTimeout: server.HeaderTimeout}
+	go msrv.Serve(mln)
+	defer msrv.Close()
+
 	var lns []net.Listener
 	for _, addr := range cfg.Listen {
 		ln, err := net.Listen("tcp", addr)

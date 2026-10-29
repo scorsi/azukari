@@ -30,6 +30,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	o := &outcome{}
 	s.serve(w, r, o)
+	s.countRequest(o)
 	keyOrCount := []any{"key", o.key}
 	if o.call == "missing" || o.call == "list" {
 		keyOrCount = []any{"count", o.count}

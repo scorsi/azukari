@@ -73,6 +73,9 @@ type env struct {
 	addr      string
 	logs      *syncBuffer
 	snapshots *syncBuffer // one "<bucket> <namespace>" line per OnSnapshot call
+	srv       *Server
+	cfg       *config.Server
+	tls       config.TLS
 }
 
 // start serves three buckets on loopback: "backup" (max 1024 bytes), "down" (its mount is
@@ -90,7 +93,8 @@ func start(t *testing.T) *env {
 			MaxObjectBytes: 1024, DiskReserve: reserve, Nodes: []string{nodeA}}
 	}
 	cfg := &config.Server{Buckets: []config.Bucket{bkt("backup", "0B"), bkt("down", "0B"), bkt("full", "1000TiB")}}
-	src, err := svid.Load(ca.SVID(t, serverID))
+	files := ca.SVID(t, serverID)
+	src, err := svid.Load(files)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +105,11 @@ func start(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	snapshots := &syncBuffer{}
-	s.OnSnapshot = func(bucket, namespace string, _ time.Time) { fmt.Fprintln(snapshots, bucket, namespace) }
+	record := s.OnSnapshot
+	s.OnSnapshot = func(bucket, namespace string, at time.Time) {
+		fmt.Fprintln(snapshots, bucket, namespace)
+		record(bucket, namespace, at)
+	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -118,7 +126,7 @@ func start(t *testing.T) *env {
 	for !strings.Contains(logs.String(), `"server-started"`) {
 		time.Sleep(time.Millisecond)
 	}
-	return &env{ca: ca, addr: ln.Addr().String(), logs: logs, snapshots: snapshots}
+	return &env{ca: ca, addr: ln.Addr().String(), logs: logs, snapshots: snapshots, srv: s, cfg: cfg, tls: files}
 }
 
 func (e *env) tlsConfig(t *testing.T, id string, alpn ...string) *tls.Config {

@@ -1,5 +1,5 @@
 { lib, buildGoModule }:
-buildGoModule {
+buildGoModule (finalAttrs: {
   pname = "azukari";
   version = "0.0.0-dev";
 
@@ -29,6 +29,7 @@ buildGoModule {
   ldflags = [
     "-s"
     "-w"
+    "-X main.version=${finalAttrs.version}" # azukari_build_info
   ];
 
   # `nix flake check` runs this phase. The default one tests only subPackages (the commands),
@@ -45,4 +46,4 @@ buildGoModule {
     homepage = "https://github.com/scorsi/azukari";
     mainProgram = "azukari";
   };
-}
+})
