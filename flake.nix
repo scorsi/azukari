@@ -67,6 +67,25 @@
                   diff -r $src/gen gen || { echo "gen/ is stale: run buf generate"; exit 1; }
                   touch $out
                 '';
+
+            # The store and the operator command never link the encryption package (ADR 0002, 0010).
+            no-encryption =
+              pkgs.runCommand "azukari-no-encryption"
+                {
+                  nativeBuildInputs = [ pkgs.go ];
+                  inherit (azukari) src;
+                }
+                ''
+                  export HOME=$TMPDIR GOCACHE=$TMPDIR/go-cache GOFLAGS=-mod=vendor GOTOOLCHAIN=local CGO_ENABLED=0
+                  cp -r $src work && chmod -R u+w work && cd work
+                  cp -r ${azukari.goModules} vendor
+                  go list -deps ./cmd/azukari-server ./cmd/azukari > deps
+                  if grep chacha20poly1305 deps; then
+                    echo "azukari-server or azukari imports encryption code"
+                    exit 1
+                  fi
+                  touch $out
+                '';
           };
 
           devShells.default = pkgs.mkShellNoCC {
