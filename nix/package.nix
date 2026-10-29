@@ -19,6 +19,7 @@ buildGoModule (finalAttrs: {
       (lib.fileset.fileFilter (f: f.hasExt "go") ../.)
       ../internal/config/testdata
       ../internal/bucket/testdata
+      ../internal/backup/testdata
       ../internal/seal/testdata
       ../internal/fastcdc/testdata
     ];

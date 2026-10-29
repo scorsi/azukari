@@ -1,0 +1,18 @@
+{
+  "max_incompressible": {
+    "plaintext_size": 4194304,
+    "plaintext_sha256": "135c4b5f51d8c6f37bacfa1a6586f58046915a9b6ebac5e9f2b1ee9c7fc7e76e",
+    "id": "f9a7ee21e0e049eed9f33cb418176b7a476c129b4e1f3431e769e764992d7d31",
+    "nonce": "ee40427b17d6b36d60241b69411b1e2dcaca8f0abc28380e",
+    "sealed_size": 4194346,
+    "sealed_sha256": "1b3c0f3642341292a46ccc659780e4feac4e1a7cb7a4c0c7e22da49aa35a04f9"
+  },
+  "multi_block": {
+    "plaintext_size": 1048576,
+    "plaintext_sha256": "4a62f734f17e539d587fca0ae12be1ad653e11ffe66935fe12985ae1252256f6",
+    "id": "728a7c86f11abaec24e73d4e842cfdbcda354d8f8ffefc229b4ab2eb9200e2c1",
+    "nonce": "b013e069a09885ad11876c1e48f95a4dffd28765c98b3eb6",
+    "sealed_size": 409683,
+    "sealed_sha256": "6267f4e4501f7b7407e92dd4cced373c6b02cfabbc04efdde09b1a780b3047c0"
+  }
+}

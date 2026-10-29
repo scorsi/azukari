@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -193,6 +194,92 @@ func TestRoot(t *testing.T) {
 		t.Errorf("open = %q, %v", got, err)
 	}
 	if _, err := k.OpenRoot("20261029T120000Z-0011aabc", a); !errors.Is(err, ErrCorrupt) {
+		t.Errorf("other name: err = %v", err)
+	}
+}
+
+// Large plaintexts: a ~1 MiB compressible one zstd splits into several blocks, and a
+// maximum-size (FastCDC MaxSize, 4 MiB) incompressible one.
+func multiBlock() []byte {
+	var b []byte
+	for i := uint64(0); len(b) < 1<<20; i++ {
+		s := sha256.Sum256(binary.LittleEndian.AppendUint64(nil, i))
+		b = fmt.Appendf(b, "line %d: %x\n", i, s[:4])
+	}
+	return b[:1<<20]
+}
+
+func maxIncompressible() []byte {
+	b := make([]byte, 0, 4<<20)
+	for i := uint64(0); len(b) < 4<<20; i++ {
+		s := sha256.Sum256(binary.LittleEndian.AppendUint64(nil, i))
+		b = append(b, s[:]...)
+	}
+	return b
+}
+
+// largeVector stores digests rather than megabytes of hex.
+type largeVector struct {
+	PlaintextSize   int    `json:"plaintext_size"`
+	PlaintextSHA256 string `json:"plaintext_sha256"`
+	ID              string `json:"id"`
+	Nonce           string `json:"nonce"`
+	SealedSize      int    `json:"sealed_size"`
+	SealedSHA256    string `json:"sealed_sha256"`
+}
+
+func sum(b []byte) string { s := sha256.Sum256(b); return hex.EncodeToString(s[:]) }
+
+// TestLargeVectors pins zstd's output past one block and the maximum chunk: never regenerate
+// testdata/large-v1.json, a change is a format version (ADR 0006, 0010).
+func TestLargeVectors(t *testing.T) {
+	k := testKey(t)
+	got := map[string]largeVector{}
+	for name, p := range map[string][]byte{"multi_block": multiBlock(), "max_incompressible": maxIncompressible()} {
+		id, sealed := k.SealChunk(p)
+		n := k.chunkNonce(id)
+		got[name] = largeVector{len(p), sum(p), hex.EncodeToString(id[:]), hex.EncodeToString(n[:]), len(sealed), sum(sealed)}
+		if back, err := k.OpenChunk(id, sealed); err != nil || !bytes.Equal(back, p) {
+			t.Errorf("%s: open: %v", name, err)
+		}
+	}
+	b, err := json.MarshalIndent(got, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.ReadFile("testdata/large-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b = append(b, '\n'); !bytes.Equal(b, want) {
+		t.Fatalf("large vectors changed (a format version, ADR 0006):\n%s", b)
+	}
+	if v := got["multi_block"]; v.SealedSize >= v.PlaintextSize/2 {
+		t.Errorf("multi_block: %d sealed bytes, not compressed", v.SealedSize)
+	}
+	if v := got["max_incompressible"]; v.SealedSize != v.PlaintextSize+Overhead {
+		t.Errorf("max_incompressible: %d sealed bytes", v.SealedSize)
+	}
+}
+
+// TestRootVector: the fixed sealed root (internal/backup/testdata, where its fields are
+// checked) opens under its name only, and re-sealing it with its stored nonce gives the same
+// bytes: the root's aad, compression and layout are pinned, not only round-tripped.
+func TestRootVector(t *testing.T) {
+	k := testKey(t)
+	sealed, err := os.ReadFile("../backup/testdata/root-v1.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const name = "20261029T120000Z-0011aabb"
+	p, err := k.OpenRoot(name, sealed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again := k.seal("snapshots/"+name, [nonceSize]byte(sealed[1:1+nonceSize]), p); !bytes.Equal(again, sealed) {
+		t.Errorf("root re-sealed to other bytes (a format version, ADR 0006)")
+	}
+	if _, err := k.OpenRoot("20261029T120000Z-0011aabc", sealed); !errors.Is(err, ErrCorrupt) {
 		t.Errorf("other name: err = %v", err)
 	}
 }
