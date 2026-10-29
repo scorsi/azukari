@@ -17,9 +17,7 @@ pkgs.testers.runNixOSTest {
 
     journal = "journalctl _SYSTEMD_UNIT=azukari-server.service -o cat"
 
-    machine.wait_for_unit("srv-disk1.mount")
-    # The disk may mount after the store started (nofail, no RequiresMountsFor): open the bucket now.
-    machine.succeed("systemctl restart azukari-server")
+    # No restart: the store starts after srv-disk1.mount (After=), so its first boot creates the bucket.
     machine.wait_for_open_port(8443, "127.0.0.1")
     machine.wait_until_succeeds(f"{journal} | grep -F '\"event\":\"bucket-created\"'")
 

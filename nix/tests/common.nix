@@ -55,7 +55,8 @@ in
   client = "${pkgs.python3.interpreter} ${./client.py} ${ca}";
 
   # The store: the module with one backup bucket granted to node-a and node-b, on its own extra
-  # virtual disk mounted at its mount_point, `nofail` (ADR 0004, 0010). The SVID files are read
+  # virtual disk mounted at its mount_point, `nofail` (ADR 0004, 0010); the module orders the store
+  # after that mount, so it boots with the disk there. The SVID files are read
   # from the store's test CA path directly.
   store = {
     imports = [ self.nixosModules.azukari-server ];

@@ -5,6 +5,7 @@ self:
   config,
   lib,
   pkgs,
+  utils,
   ...
 }:
 let
@@ -15,6 +16,12 @@ let
   exe = lib.getExe' cfg.package "azukari-server";
   buckets = cfg.settings.buckets or [ ];
   path = "/etc/azukari/azukari-server.toml";
+  # The buckets' mount units, `/` (always mounted) left out.
+  mounts = lib.unique (
+    map (b: "${utils.escapeSystemdPath b.mount_point}.mount") (
+      lib.filter (b: b.mount_point != "/") buckets
+    )
+  );
 
   # `azukari-server check` at build time: an invalid file never becomes a system. It reads no SVID,
   # mount nor bucket, so the build sandbox suffices.
@@ -76,11 +83,12 @@ in
       description = "azukari store";
       wantedBy = [ "multi-user.target" ];
       wants = [ "network-online.target" ];
-      after = [ "network-online.target" ];
+      # After= the bucket mounts: a slow `nofail` mount still finishes before the store opens its
+      # buckets. Ordering only: no Wants= (it would mount a `noauto` disk) and no Requires= nor
+      # RequiresMountsFor= (a disk that did not mount must not keep the store down, ADR 0004).
+      after = [ "network-online.target" ] ++ mounts;
       # A reload re-reads only the SVID files: a configuration change restarts.
       restartTriggers = [ configFile ];
-      # No RequiresMountsFor= on the buckets: a disk that did not mount (nofail) leaves its bucket
-      # unavailable while the others serve (ADR 0004), it must not keep the store down.
       serviceConfig = {
         ExecStartPre = "+${makeBucketDirs}";
         ExecStart = "${exe} run ${path}";

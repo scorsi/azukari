@@ -65,9 +65,7 @@ pkgs.testers.runNixOSTest {
             + bucket + "\"(,[^}]*)?\\} " + value + "$'"
         )
 
-    machine.wait_for_unit("srv-disk1.mount")
-    # disk1 may mount after the store started (nofail, no RequiresMountsFor): open the buckets now.
-    machine.succeed("systemctl restart azukari-server")
+    # No restart: the store starts after srv-disk1.mount (After=), so its first boot creates backup.
     machine.wait_for_open_port(8443, "127.0.0.1")
     logged("bucket-created", "backup")
 

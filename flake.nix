@@ -64,6 +64,17 @@
             };
           evaluated = (nixosFor linux { }).config;
           unit = evaluated.systemd.services.azukari-server;
+          # The example plus a bucket on `/`, which needs no mount unit.
+          rootBucket =
+            (nixosFor linux {
+              services.azukari-server.settings.buckets = [
+                {
+                  name = "root";
+                  path = "/var/lib/azukari/root";
+                  mount_point = "/";
+                }
+              ];
+            }).config.systemd.services.azukari-server;
           moduleConfig =
             extra: (nixosFor system extra).config.environment.etc."azukari/azukari-server.toml".source;
         in
@@ -99,7 +110,14 @@
                 && sc.CapabilityBoundingSet == ""
                 && sc.NoNewPrivileges
                 && !(sc ? DynamicUser);
-              # A bucket's disk may be absent at start (ADR 0004); no firewall opening.
+              # The store starts after its buckets' mounts (escaped unit names, `/` left out) but a
+              # disk may be absent at start (ADR 0004): ordering only. No firewall opening.
+              assert lib.elem "srv-disk\\x2d1.mount" unit.after;
+              assert !(lib.elem "-.mount" rootBucket.after);
+              assert
+                !(lib.any (u: lib.hasSuffix ".mount" u) (
+                  unit.wants ++ unit.requires ++ unit.bindsTo ++ unit.requisite
+                ));
               assert !(lib.hasInfix "RequiresMountsFor" (builtins.toJSON unit.unitConfig));
               assert evaluated.networking.firewall.allowedTCPPorts == [ ];
               assert

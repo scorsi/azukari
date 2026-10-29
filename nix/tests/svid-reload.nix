@@ -54,8 +54,6 @@ pkgs.testers.runNixOSTest {
     def events(name):
         return int(machine.succeed(f"{journal} | grep -cF '\"event\":\"{name}\"' || true").strip())
 
-    machine.wait_for_unit("srv-disk1.mount")
-    machine.succeed("systemctl restart azukari-server")
     machine.wait_for_open_port(8443, "127.0.0.1")
 
     old = fingerprint("${dir}/svid.pem")
