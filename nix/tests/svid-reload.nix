@@ -1,6 +1,7 @@
-# nixosTest `svid-reload` (ADR 0010, milestone M1): the test CA reissues the store's SVID in the
-# VM, SIGHUP (the unit's reload), and new handshakes see the new certificate; a reload with a key
-# that does not match keeps the previous one (ADR 0005). One VM, as `rights`.
+# nixosTest `svid-reload` (ADR 0010, milestone M1, ADR 0016): the test CA reissues the store's
+# SVID in the VM and replaces the files as the internal CA does (staged, renamed, key.pem last),
+# with no reload: the next handshake sees the new certificate; a key that does not match keeps
+# the previous one (ADR 0005); SIGHUP (the unit's reload) still loads the files. One VM.
 args@{ pkgs, ... }:
 let
   t = import ./common.nix args;
@@ -60,39 +61,60 @@ pkgs.testers.runNixOSTest {
     assert served() == old, "the store serves the SVID it started with"
     assert expiry() == not_after("${dir}/svid.pem")
 
-    with subtest("the test CA reissues the SVID, SIGHUP, a new handshake sees it"):
-        # The internal CA's profile (common.nix), a new key, another serial and NotAfter.
-        machine.succeed(
-            "cd $(mktemp -d)"
-            " && ${openssl} genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out key.pem"
+    def reissue(serial):
+        """Shell issuing a new SVID (the internal CA's profile, common.nix) into the current dir."""
+        return (
+            "${openssl} genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out key.pem"
             " && ${openssl} req -new -key key.pem -subj /O=azukari-test -out leaf.csr"
             " && printf '%s\\n' basicConstraints=critical,CA:FALSE keyUsage=critical,digitalSignature"
             " extendedKeyUsage=serverAuth,clientAuth"
             " 'subjectAltName=URI:${t.id "store" "azukari-server"}' > leaf.ext"
             " && ${openssl} x509 -req -in leaf.csr -CA ${t.ca}/ca.pem -CAkey ${t.ca}/ca.key"
-            " -set_serial 4242 -days 30 -extfile leaf.ext -out svid.pem"
-            " && install -m 0644 svid.pem key.pem ${dir}/"
+            f" -set_serial {serial} -days 30 -extfile leaf.ext -out svid.pem"
+        )
+
+    def replace(name, src):
+        """Write as the internal CA does: staged next to the file, then renamed over it."""
+        return f"install -m 0644 {src} ${dir}/.{name}.tmp && mv -f ${dir}/.{name}.tmp ${dir}/{name}"
+
+    with subtest("renewed files, no reload: the next handshake sees the new SVID"):
+        machine.succeed(
+            "cd $(mktemp -d) && " + reissue(4242)
+            + " && " + replace("svid.pem", "svid.pem") + " && " + replace("key.pem", "key.pem")
         )
         new = fingerprint("${dir}/svid.pem")
         assert new != old
         assert "serial=1092" in machine.succeed("${openssl} x509 -noout -serial -in ${dir}/svid.pem")
         before = expiry()
-        machine.succeed("systemctl reload azukari-server")
+        assert served() == new, "the next handshake gets the renewed SVID"
         machine.wait_until_succeeds(f"{journal} | grep -F '\"event\":\"svid-reloaded\"'")
-        assert served() == new, "new handshakes get the reissued SVID"
         assert expiry() == not_after("${dir}/svid.pem") != before, "the expiry gauge follows"
+        served()
+        assert events("svid-reloaded") == 1, "unchanged files are not reloaded again"
 
-    with subtest("a key that does not match: svid-reload-failed, the previous SVID still serves"):
+    with subtest("a key that does not match: svid-reload-failed once, the previous SVID still serves"):
         machine.succeed(
             "${openssl} genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out /tmp/other.pem"
-            " && install -m 0644 /tmp/other.pem ${dir}/key.pem"
+            " && " + replace("key.pem", "/tmp/other.pem")
         )
         assert events("svid-reload-failed") == 0
-        machine.succeed("systemctl reload azukari-server")
-        machine.wait_until_succeeds(f"{journal} | grep -F '\"event\":\"svid-reload-failed\"'")
-        assert events("svid-reloaded") == 1
         assert served() == new, "handshakes keep the previous SVID"
+        machine.wait_until_succeeds(f"{journal} | grep -F '\"event\":\"svid-reload-failed\"'")
+        assert served() == new
+        assert events("svid-reload-failed") == 1, "one failure per change of the files"
+        assert events("svid-reloaded") == 1
         assert expiry() == not_after("${dir}/svid.pem")
+
+    with subtest("SIGHUP still loads the files, before any handshake"):
+        machine.succeed(
+            "cd $(mktemp -d) && " + reissue(4343)
+            + " && " + replace("svid.pem", "svid.pem") + " && " + replace("key.pem", "key.pem")
+        )
+        third = fingerprint("${dir}/svid.pem")
+        machine.succeed("systemctl reload azukari-server")
+        machine.wait_until_succeeds(f"test $({journal} | grep -cF '\"event\":\"svid-reloaded\"') -eq 2")
+        assert expiry() == not_after("${dir}/svid.pem")
+        assert served() == third
 
     ${t.validate "machine"}
   '';

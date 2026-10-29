@@ -275,3 +275,71 @@ func TestID(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// rotate replaces path as the internal CA does: a staged file renamed over it (new inode).
+func rotate(t *testing.T, path string, data []byte) {
+	t.Helper()
+	testca.Write(t, path+".new", data)
+	if err := os.Rename(path+".new", path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWatch(t *testing.T) {
+	ca := testca.New(t)
+	cert, key := ca.Issue(t, serverID, nil)
+	f := testca.Files(t, cert, key, ca.PEM)
+	store, err := Load(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reports []error
+	store.OnReload = func(err error) { reports = append(reports, err) }
+	srvCfg := store.ServerConfig()
+	node := source(t, ca, nodeID)
+	first := store.NotAfter()
+
+	served := func() time.Time {
+		t.Helper()
+		var got time.Time
+		cli := node.ClientConfig(serverID)
+		cli.VerifyConnection = func(cs tls.ConnectionState) error {
+			got = cs.PeerCertificates[0].NotAfter
+			return nil
+		}
+		if srvErr, cliErr, _ := handshake(t, srvCfg, cli); srvErr != nil || cliErr != nil {
+			t.Fatalf("server %v, client %v", srvErr, cliErr)
+		}
+		return got
+	}
+
+	if got := served(); !got.Equal(first) || len(reports) != 0 {
+		t.Fatalf("unchanged files: served %v, reports %v", got, reports)
+	}
+
+	// Renewal caught between the two renames: new certificate, old key.
+	second := first.Add(time.Hour).Truncate(time.Second)
+	cert, key = ca.Issue(t, serverID, func(c *x509.Certificate) { c.NotAfter = second })
+	rotate(t, f.SVIDFile, cert)
+	for range 2 {
+		if got := served(); !got.Equal(first) {
+			t.Fatalf("half-rotated: served %v, want the previous %v", got, first)
+		}
+	}
+	if len(reports) != 1 || reports[0] == nil || !strings.Contains(reports[0].Error(), "does not match") {
+		t.Fatalf("half-rotated: reports %v, want one mismatch", reports)
+	}
+
+	// key.pem lands last: the next handshake serves the new SVID, without Reload.
+	rotate(t, f.KeyFile, key)
+	if got := served(); !got.Equal(second) || !store.NotAfter().Equal(second) {
+		t.Fatalf("rotated: served %v, NotAfter %v, want %v", got, store.NotAfter(), second)
+	}
+	if len(reports) != 2 || reports[1] != nil {
+		t.Fatalf("rotated: reports %v, want one success", reports)
+	}
+	served()
+	if len(reports) != 2 {
+		t.Fatalf("unchanged files reloaded again: %v", reports)
+	}
+}

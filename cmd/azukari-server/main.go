@@ -26,7 +26,7 @@ const usage = `usage: azukari-server check|run <config.toml>
 
 commands:
   check   validate the configuration file and exit (reads no SVID, mount nor bucket)
-  run     serve the buckets until SIGTERM or SIGINT; SIGHUP reloads the SVID files
+  run     serve the buckets until SIGTERM or SIGINT; renewed SVID files are picked up, SIGHUP forces it
 `
 
 func main() {
@@ -76,15 +76,19 @@ func run(cfg *config.Server, log *slog.Logger) error {
 		lns = append(lns, ln)
 	}
 
+	// Renewed files are picked up before each handshake (ADR 0016); SIGHUP forces a load.
+	src.OnReload = func(err error) {
+		if err != nil {
+			log.Error("", "event", "svid-reload-failed", "err", err.Error())
+		} else {
+			log.Info("", "event", "svid-reloaded", "not_after", src.NotAfter().UTC().Format(time.RFC3339))
+		}
+	}
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	go func() {
 		for range hup {
-			if err := src.Reload(); err != nil {
-				log.Error("", "event", "svid-reload-failed", "err", err.Error())
-			} else {
-				log.Info("", "event", "svid-reloaded", "not_after", src.NotAfter().UTC().Format(time.RFC3339))
-			}
+			src.Reload() // reported through OnReload
 		}
 	}()
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
