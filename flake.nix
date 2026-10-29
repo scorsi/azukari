@@ -179,6 +179,10 @@
               inherit self pkgs;
               inherit (inputs) nisshi masu;
             };
+            svid-reload = import ./nix/tests/svid-reload.nix {
+              inherit self pkgs;
+              inherit (inputs) nisshi masu;
+            };
           };
 
           devShells.default = pkgs.mkShellNoCC {
