@@ -22,6 +22,5 @@
         bundle_file = "/var/lib/hanko/azukari-backup/bundle.pem";
       };
     };
-    preCommand = "echo dump > /var/backup/dump";
   };
 }

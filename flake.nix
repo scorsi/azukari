@@ -166,15 +166,20 @@
               in
               assert
                 lib.hasSuffix "/bin/azukari-backup run /etc/azukari/azukari-backup.toml" sc.ExecStart
-                && lib.hasPrefix "+/nix/store/" sc.ExecStartPre
+                && !(sc ? ExecStartPre)
                 && sc.Type == "oneshot"
-                && sc.User == "root"
+                && sc.User == "azukari-backup"
+                && sc.Group == "azukari-backup"
                 && sc.LogRateLimitIntervalSec == "30s"
                 && sc.LogRateLimitBurst == 30000
                 && sc.ProtectSystem == "strict"
-                && sc.ProtectHome == "read-only"
-                && sc.CapabilityBoundingSet == "CAP_DAC_READ_SEARCH"
+                && sc.ProtectHome == true
+                && sc.CapabilityBoundingSet == ""
+                && sc.AmbientCapabilities == ""
                 && sc.NoNewPrivileges
+                && sc.MemoryDenyWriteExecute
+                && sc.SystemCallFilter == [ "@system-service" ]
+                && !(sc ? PrivateUsers)
                 && !(sc ? ReadWritePaths)
                 && !(sc ? DynamicUser);
               # Started by the timer only.
@@ -186,11 +191,11 @@
                 && timer.timerConfig.RandomizedDelaySec == "1h";
               assert failed storeKey == failed backup + 1;
               assert
-                !(
-                  (backupFor linux { services.azukari-backup.preCommand = lib.mkForce null; })
-                  .systemd.services.azukari-backup.serviceConfig
-                    ? ExecStartPre
-                );
+                backup.users.users.azukari-backup.isSystemUser
+                && backup.users.users.azukari-backup.group == "azukari-backup"
+                && backup.users.groups ? azukari-backup;
+              # No root step: the option is gone (ADR 0020).
+              assert !(backup.services.azukari-backup ? preCommand);
               pkgs.runCommand "azukari-backup-module-eval" { } ''
                 echo ${lib.escapeShellArg (builtins.unsafeDiscardStringContext (builtins.toJSON sc))} > $out
               '';

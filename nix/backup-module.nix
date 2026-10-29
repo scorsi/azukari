@@ -1,6 +1,6 @@
 # NixOS module for azukari-backup, a node's oneshot run on a timer (milestone M2): the checked file,
-# the unit with its read-only hardening and journald limits (ADR 0006, 0009, 0011), an optional
-# command before the run (a service's dump).
+# the unit as the static user `azukari-backup` with no capability (ADR 0020), its read-only hardening
+# and journald limits (ADR 0006, 0009, 0011). Services export what they want backed up (ADR 0021).
 self:
 {
   config,
@@ -49,8 +49,11 @@ in
       default = { };
       description = ''
         The backup's TOML (ADR 0011): server, bucket, `data_key_file`, paths and `[tls]`. The run is
-        root, so the data key (a deployment secret, mode 0400 root) and the SVID files of the
-        internal CA are read as they are; none of them may be a store path.
+        the user `azukari-backup` with no capability (ADR 0020), so the deployment must make
+        `data_key_file` owned by `azukari-backup`, mode 0400 (the module cannot check a secret's
+        owner), give the SVID directory the group `azukari-backup` (hanko ADR-0005), and give
+        `paths` directories the group may read; a file the run cannot read fails the run. Paths
+        under /home and /root are not visible. None of the key files may be a store path.
       '';
     };
 
@@ -65,17 +68,6 @@ in
       default = "1h";
       description = "`RandomizedDelaySec=` of the timer: spreads the nodes' runs on the store.";
     };
-
-    preCommand = mkOption {
-      type = types.nullOr types.lines;
-      default = null;
-      example = "pg_dumpall -U postgres > /var/backup/postgres.sql";
-      description = ''
-        Shell run before the backup in the same unit (`ExecStartPre=`), e.g. a service's dump into a
-        backed-up path; its failure fails the run. It runs as root outside the unit's sandbox, so it
-        may write its dump.
-      '';
-    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -83,6 +75,12 @@ in
       assertion = !lib.hasPrefix builtins.storeDir f;
       message = "services.azukari-backup: ${f} is in the world-readable Nix store; point it at a secret file.";
     }) secrets;
+
+    users.users.azukari-backup = {
+      isSystemUser = true;
+      group = "azukari-backup";
+    };
+    users.groups.azukari-backup = { };
 
     environment.etc."azukari/azukari-backup.toml".source = configFile;
 
@@ -93,16 +91,10 @@ in
       after = [ "network-online.target" ];
       serviceConfig = {
         Type = "oneshot";
-        ExecStartPre =
-          lib.mkIf (cfg.preCommand != null)
-            "+${pkgs.writeShellScript "azukari-backup-pre" ''
-              set -euo pipefail
-              ${cfg.preCommand}
-            ''}";
         ExecStart = "${exe} run ${path}";
-        # Root reads every service's data and the key and SVID files (ADR 0006: owners are saved).
-        User = "root";
-        Group = "root";
+        # Reads only what its group may (ADR 0020). Never PrivateUsers=: owners would read as 65534.
+        User = "azukari-backup";
+        Group = "azukari-backup";
         # One line per changed or skipped file at most (ADR 0009): nisshi's per-request values.
         LogRateLimitIntervalSec = lib.mkDefault "30s";
         LogRateLimitBurst = lib.mkDefault 30000;
@@ -121,13 +113,18 @@ in
         RestrictSUIDSGID = true;
         LockPersonality = true;
         SystemCallArchitectures = "native";
-        # Read any file whatever its owner and mode; nothing else of root.
-        CapabilityBoundingSet = "CAP_DAC_READ_SEARCH";
+        CapabilityBoundingSet = "";
+        AmbientCapabilities = "";
         NoNewPrivileges = true;
         ProtectSystem = "strict";
-        ProtectHome = "read-only"; # Configured paths may live under /home or /root.
-        PrivateTmp = true;
+        ProtectHome = true;
+        PrivateTmp = true; # The metadata stream's temporary file (os.CreateTemp).
         PrivateDevices = true;
+        ProtectProc = "invisible";
+        ProcSubset = "pid";
+        MemoryDenyWriteExecute = true; # Pure Go (CGO_ENABLED=0) maps nothing W+X.
+        # Not `~@resources`: Go's runtime raises RLIMIT_NOFILE (prlimit64) at start.
+        SystemCallFilter = [ "@system-service" ];
         RestrictAddressFamilies = [
           "AF_INET"
           "AF_INET6"
