@@ -33,8 +33,9 @@ must never be lost, and it is opaque to whoever keeps it.
   subproduct in English; the operator command alone is plain `azukari`:
   - `azukari-server`: the store;
   - `azukari-backup`: the backup component of a node (back up, list snapshots, restore);
-  - `azukari`: the operator command line, run on the store's host; it talks only to the
-    store's local administration socket, never over the network;
+  - `azukari`: the operator command line. Its administration commands talk only to the
+    store's local administration socket, never over the network, so they run on the store's
+    host; other operator commands may join it later, each with its ADR;
   - a library shared by them (configuration, transport, protocol).
   Each node-side subproduct is a dedicated component; there is no general-purpose client for
   nodes.

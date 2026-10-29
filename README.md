@@ -12,7 +12,7 @@
 - `azukari-server`: the store.
 - `azukari-backup`: the backup component of a node: chunks, deduplicates, encrypts, pushes,
   restores.
-- `azukari`: the operator command line on the store's host (local administration socket).
+- `azukari`: the operator command line (administration through the store's local socket).
 
 ## Not its job
 
