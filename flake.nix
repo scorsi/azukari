@@ -38,6 +38,7 @@
 
       flake.nixosModules = rec {
         azukari-server = import ./nix/module.nix self;
+        azukari-backup = import ./nix/backup-module.nix self;
         default = azukari-server;
       };
 
@@ -77,6 +78,19 @@
             }).config.systemd.services.azukari-server;
           moduleConfig =
             extra: (nixosFor system extra).config.environment.etc."azukari/azukari-server.toml".source;
+          # The same for the node's backup module.
+          backupFor =
+            host: extra:
+            (inputs.nixpkgs.lib.nixosSystem {
+              modules = [
+                self.nixosModules.azukari-backup
+                ./nix/backup-example.nix
+                extra
+                { nixpkgs.hostPlatform = host; }
+              ];
+            }).config;
+          backup = backupFor linux { };
+          backupConfig = extra: (backupFor system extra).environment.etc."azukari/azukari-backup.toml".source;
         in
         {
           packages = {
@@ -137,6 +151,50 @@
                 } > $out
               '';
 
+            # The backup unit and its timer, forced at eval time as `module-eval`.
+            backup-module-eval =
+              let
+                unit = backup.systemd.services.azukari-backup;
+                sc = unit.serviceConfig;
+                timer = backup.systemd.timers.azukari-backup;
+                # Failed assertions, messages unforced (the sample host fails others, e.g. no root fs).
+                failed = c: lib.length (lib.filter (a: !a.assertion) c.assertions);
+                # A data key in the store fails the evaluation.
+                storeKey = backupFor linux {
+                  services.azukari-backup.settings.data_key_file = lib.mkForce "${builtins.storeDir}/x-data.key";
+                };
+              in
+              assert
+                lib.hasSuffix "/bin/azukari-backup run /etc/azukari/azukari-backup.toml" sc.ExecStart
+                && lib.hasPrefix "+/nix/store/" sc.ExecStartPre
+                && sc.Type == "oneshot"
+                && sc.User == "root"
+                && sc.LogRateLimitIntervalSec == "30s"
+                && sc.LogRateLimitBurst == 30000
+                && sc.ProtectSystem == "strict"
+                && sc.ProtectHome == "read-only"
+                && sc.CapabilityBoundingSet == "CAP_DAC_READ_SEARCH"
+                && sc.NoNewPrivileges
+                && !(sc ? ReadWritePaths)
+                && !(sc ? DynamicUser);
+              # Started by the timer only.
+              assert unit.wantedBy == [ ] && unit.restartTriggers == [ ];
+              assert
+                timer.wantedBy == [ "timers.target" ]
+                && timer.timerConfig.OnCalendar == "daily"
+                && timer.timerConfig.Persistent
+                && timer.timerConfig.RandomizedDelaySec == "1h";
+              assert failed storeKey == failed backup + 1;
+              assert
+                !(
+                  (backupFor linux { services.azukari-backup.preCommand = lib.mkForce null; })
+                  .systemd.services.azukari-backup.serviceConfig
+                    ? ExecStartPre
+                );
+              pkgs.runCommand "azukari-backup-module-eval" { } ''
+                echo ${lib.escapeShellArg (builtins.unsafeDiscardStringContext (builtins.toJSON sc))} > $out
+              '';
+
             # The committed gen/ is what `buf generate` produces from proto/.
             proto-generated =
               pkgs.runCommand "azukari-proto-generated"
@@ -187,6 +245,10 @@
             module = moduleConfig { };
             module-typo = pkgs.testers.testBuildFailure (moduleConfig {
               services.azukari-server.settings.listne = [ "[::]:8443" ];
+            });
+            backup-module = backupConfig { };
+            backup-module-typo = pkgs.testers.testBuildFailure (backupConfig {
+              services.azukari-backup.settings.buckte = "backup";
             });
             # nixosTests (nix/tests/, ADR 0010).
             rights = import ./nix/tests/rights.nix {
