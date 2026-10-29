@@ -1,0 +1,49 @@
+// Backup format of azukari-backup (ADR 0006). These messages are only ever stored sealed;
+// the store never reads them.
+syntax = "proto3";
+
+package azukari.backup.v1;
+
+option go_package = "github.com/scorsi/azukari/gen/azukari/backup/v1;backupv1";
+
+// One record of a snapshot's metadata stream: length-delimited, in path order.
+message Entry {
+  enum Type {
+    TYPE_UNSPECIFIED = 0;
+    TYPE_FILE = 1;
+    TYPE_DIRECTORY = 2;
+    TYPE_SYMLINK = 3;
+  }
+
+  // Relative to the configured path it was found under.
+  string path = 1;
+  Type type = 2;
+  uint32 mode = 3;
+  uint32 uid = 4;
+  uint32 gid = 5;
+  int64 mtime_ns = 6;
+  uint64 size = 7;
+  // TYPE_SYMLINK only.
+  string symlink_target = 8;
+  // TYPE_FILE only: its chunk identifiers in order, 32 bytes each.
+  repeated bytes chunks = 9;
+}
+
+// Plaintext of a snapshot root (sealed, aad = "snapshots/<name>").
+message Root {
+  uint32 format = 1;
+  int64 start_time_ns = 2;
+  int64 end_time_ns = 3;
+  // The configured paths, as given in the configuration.
+  repeated string paths = 4;
+  // Chunk identifiers of the metadata stream, in order, 32 bytes each.
+  repeated bytes metadata_chunks = 5;
+  Totals totals = 6;
+}
+
+message Totals {
+  uint64 entries = 1;
+  uint64 bytes = 2;
+  uint64 chunks = 3;
+  uint64 new_chunks = 4;
+}

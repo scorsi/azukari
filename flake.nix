@@ -27,7 +27,7 @@
       imports = [ inputs.treefmt-nix.flakeModule ];
 
       perSystem =
-        { pkgs, ... }:
+        { pkgs, lib, ... }:
         let
           azukari = pkgs.callPackage ./nix/package.nix { };
         in
@@ -40,6 +40,33 @@
           # The package's check phase runs `go vet` then `go test` (nix/package.nix).
           checks = {
             inherit azukari;
+
+            # The committed gen/ is what `buf generate` produces from proto/.
+            proto-generated =
+              pkgs.runCommand "azukari-proto-generated"
+                {
+                  nativeBuildInputs = [
+                    pkgs.buf
+                    pkgs.protoc-gen-go
+                  ];
+                  src = lib.fileset.toSource {
+                    root = ./.;
+                    fileset = lib.fileset.unions [
+                      ./buf.yaml
+                      ./buf.gen.yaml
+                      ./proto
+                      ./gen
+                    ];
+                  };
+                }
+                ''
+                  export HOME=$TMPDIR
+                  cp -r $src work && chmod -R u+w work && cd work
+                  find gen -name '*.pb.go' -delete
+                  buf generate
+                  diff -r $src/gen gen || { echo "gen/ is stale: run buf generate"; exit 1; }
+                  touch $out
+                '';
           };
 
           devShells.default = pkgs.mkShellNoCC {

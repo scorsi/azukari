@@ -20,8 +20,8 @@ buildGoModule {
     ];
   };
 
-  # No external module yet. Once go.sum exists: set to lib.fakeHash and read the value from the build error.
-  vendorHash = null;
+  # After a go.mod change: set to lib.fakeHash and read the value from the build error.
+  vendorHash = "sha256-aF4c3loEsXDF8dQt9b6bZ9JV4nTjVfKsU0Jyb/lq63M=";
 
   env.CGO_ENABLED = 0;
   ldflags = [
