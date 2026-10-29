@@ -66,9 +66,13 @@ func (c *Backup) validate() error {
 			add("paths[%d]: %q must be a clean absolute path", i, p)
 			continue
 		}
+		if p == "/" { // its entry path would be "", which restore refuses
+			add("paths: \"/\" is not allowed, list the directories to back up")
+			continue
+		}
 		for j, o := range c.Paths[:i] {
 			switch {
-			case !cleanAbsolute(o):
+			case !cleanAbsolute(o) || o == "/":
 			case p == o:
 				add("paths[%d]: %q listed twice", i, p)
 			case under(p, o) || under(o, p):

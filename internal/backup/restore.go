@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
-	"google.golang.org/protobuf/encoding/protodelim"
 	"google.golang.org/protobuf/proto"
 
 	backupv1 "github.com/scorsi/azukari/gen/azukari/backup/v1"
@@ -179,10 +178,9 @@ func (r *restorer) restore(ctx context.Context, cfg *config.Backup, name, target
 	}
 
 	br := bufio.NewReader(&stream{r: r, ids: root.MetadataChunks})
-	opts := protodelim.UnmarshalOptions{MaxSize: -1} // a file of many chunks: authenticated data
 	for {
 		e := &backupv1.Entry{}
-		if err := opts.UnmarshalFrom(br, e); err == io.EOF {
+		if err := readEntry(br, e); err == io.EOF {
 			break
 		} else if err != nil {
 			return fmt.Errorf("metadata stream: %w", err)

@@ -409,7 +409,7 @@ func (r *run) recover(ctx context.Context, ids [][32]byte) error {
 	br := bufio.NewReader(r.meta)
 	for len(lost) > 0 {
 		e := &backupv1.Entry{}
-		if err := protodelim.UnmarshalFrom(br, e); err == io.EOF {
+		if err := readEntry(br, e); err == io.EOF {
 			break
 		} else if err != nil {
 			return fmt.Errorf("metadata stream: %w", err)
@@ -479,4 +479,11 @@ func (r *run) missing(ctx context.Context, keys []string) (map[string]bool, erro
 func isReason(err error, status int, reason string) bool {
 	var se *client.Error
 	return errors.As(err, &se) && se.Status == status && se.Reason == reason
+}
+
+// readEntry reads one metadata stream record, run's recovery and restore alike. No size bound:
+// an Entry lists every chunk of its file (34 bytes each), so protodelim's 4 MiB default would
+// refuse files over ~120k chunks; the stream is the node's own (run) or authenticated (restore).
+func readEntry(r protodelim.Reader, e *backupv1.Entry) error {
+	return protodelim.UnmarshalOptions{MaxSize: -1}.UnmarshalFrom(r, e)
 }

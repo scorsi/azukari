@@ -357,3 +357,31 @@ func TestWrongKey(t *testing.T) {
 		t.Errorf("%d objects after the refused run, want %d", after, before)
 	}
 }
+
+// A file of more than ~120k chunks has an Entry over protodelim's 4 MiB default: run's
+// recovery and restore must both read it.
+func TestReadEntryLarge(t *testing.T) {
+	e := &backupv1.Entry{Path: []byte("var/lib/big")}
+	for i := range 130_000 {
+		id := make([]byte, 32)
+		id[0], id[1], id[2] = byte(i), byte(i>>8), byte(i>>16)
+		e.Chunks = append(e.Chunks, id)
+	}
+	var buf bytes.Buffer
+	if _, err := protodelim.MarshalTo(&buf, e); err != nil {
+		t.Fatal(err)
+	}
+	if buf.Len() <= 4<<20 {
+		t.Fatalf("record is %d bytes, want over 4 MiB", buf.Len())
+	}
+	if err := protodelim.UnmarshalFrom(bufio.NewReader(bytes.NewReader(buf.Bytes())), &backupv1.Entry{}); err == nil {
+		t.Fatal("default options read it: the test no longer covers the bound")
+	}
+	got := &backupv1.Entry{}
+	if err := readEntry(bufio.NewReader(&buf), got); err != nil {
+		t.Fatal(err)
+	}
+	if !proto.Equal(got, e) {
+		t.Fatal("entry differs after the round trip")
+	}
+}
