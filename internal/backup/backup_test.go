@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"math/rand/v2"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"google.golang.org/protobuf/encoding/protodelim"
@@ -383,5 +385,62 @@ func TestReadEntryLarge(t *testing.T) {
 	}
 	if !proto.Equal(got, e) {
 		t.Fatal("entry differs after the round trip")
+	}
+}
+
+// runFails runs once, expects backup-failed naming want and no snapshot root published.
+func (e *env) runFails(t *testing.T, want string) {
+	t.Helper()
+	_, err := Run(context.Background(), e.cfg, logging.New(e.logs, slog.LevelInfo))
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("err = %v, want one naming %q", err, want)
+	}
+	if e.logs.count(`"backup-failed"`) != 1 || e.logs.count(`"backup-completed"`) != 0 {
+		t.Error("want one backup-failed, no backup-completed")
+	}
+	for _, k := range e.list(t) {
+		if strings.HasPrefix(k, "node-a/snapshots/") {
+			t.Errorf("root %s published by a failed run", k)
+		}
+	}
+}
+
+// A file or directory that cannot be read fails the run: never a root that lacks it.
+func TestUnreadable(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads a mode 000 path")
+	}
+	for _, kind := range []string{"file", "dir"} {
+		t.Run(kind, func(t *testing.T) {
+			e := start(t)
+			e.makeTree(t)
+			p := filepath.Join(e.tree, "text.txt")
+			if kind == "dir" {
+				p = filepath.Join(e.tree, "d1")
+			}
+			if err := os.Chmod(p, 0); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.Chmod(p, 0o755) }) // TempDir's cleanup must list it
+			e.runFails(t, p)
+		})
+	}
+}
+
+// A read failing after several chunks were added fails the run.
+func TestReadErrorMidway(t *testing.T) {
+	e := start(t)
+	e.makeTree(t)
+	big := filepath.Join(e.tree, "big")
+	fileReader = func(f *os.File) io.Reader {
+		if f.Name() != big {
+			return f
+		}
+		return io.MultiReader(io.LimitReader(f, 6<<20), iotest.ErrReader(errors.New("disk on fire")))
+	}
+	t.Cleanup(func() { fileReader = func(f *os.File) io.Reader { return f } })
+	e.runFails(t, "disk on fire")
+	if !strings.Contains(e.logs.b.String(), big) {
+		t.Error("backup-failed does not name the file")
 	}
 }

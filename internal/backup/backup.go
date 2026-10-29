@@ -56,6 +56,9 @@ var (
 // beforeRefs runs between the last upload and the refs PUT (test hook: prune a chunk there).
 var beforeRefs = func() {}
 
+// fileReader is what a regular file is chunked from (test hook: fail a read midway).
+var fileReader = func(f *os.File) io.Reader { return f }
+
 // Run backs up cfg's paths into a new snapshot, logs backup-completed or backup-failed
 // (ADR 0009) and returns the snapshot's name.
 func Run(ctx context.Context, cfg *config.Backup, log *slog.Logger) (string, error) {
@@ -96,7 +99,9 @@ type run struct {
 	bytesNew uint64
 }
 
-// skipError is a problem with one path: logged as file-skipped, the run goes on.
+// skipError is a path of a kind ADR 0006 does not save: logged as file-skipped, the run goes
+// on. A file or directory that cannot be read is not one: the run fails, since a snapshot
+// that silently lacks it (or holds its chunks without its entry) would not restore as saved.
 type skipError struct{ error }
 
 func (r *run) run(ctx context.Context, cfg *config.Backup) (string, error) {
@@ -180,8 +185,8 @@ func (r *run) run(ctx context.Context, cfg *config.Backup) (string, error) {
 	return name, nil
 }
 
-// visit saves one path of the walk under root. Only an error on root itself or from the
-// store stops the run.
+// visit saves one path of the walk under root. Any error but a skipError under root stops
+// the run: a directory that cannot be listed, a file that cannot be read, the store.
 func (r *run) visit(ctx context.Context, root string) fs.WalkDirFunc {
 	return func(path string, d fs.DirEntry, err error) error {
 		var info fs.FileInfo
@@ -217,7 +222,7 @@ func (r *run) save(ctx context.Context, path string, info fs.FileInfo) error {
 		setMeta(e, info)
 		target, err := os.Readlink(path)
 		if err != nil {
-			return skipError{err}
+			return err
 		}
 		e.SymlinkTarget = []byte(target)
 	default:
@@ -246,19 +251,19 @@ func (r *run) file(ctx context.Context, path string, e *backupv1.Entry) error {
 	// O_NOFOLLOW, O_NONBLOCK: a file swapped for a symlink or a FIFO since the walk saw it.
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return skipError{err}
+		return err // *PathError: names the path
 	}
 	defer f.Close()
 	before, err := f.Stat()
 	if err != nil {
-		return skipError{err}
+		return err
 	}
 	if !before.Mode().IsRegular() {
 		return skipError{errors.New("no longer a regular file")}
 	}
 	setMeta(e, before)
-	if e.Size, err = r.chunk(ctx, f, func(id [32]byte) { e.Chunks = append(e.Chunks, id[:]) }); err != nil {
-		return err
+	if e.Size, err = r.chunk(ctx, fileReader(f), func(id [32]byte) { e.Chunks = append(e.Chunks, id[:]) }); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
 	}
 	r.totals.Bytes += e.Size
 	after, err := f.Stat()
@@ -269,7 +274,8 @@ func (r *run) file(ctx context.Context, path string, e *backupv1.Entry) error {
 }
 
 // chunk splits rd and adds each chunk, calling fn with its identifier in order; it returns
-// the bytes read. A read error is a skipError, a store error is not.
+// the bytes read. A read error fails the run like a store error: its chunks so far are
+// already in refs.
 func (r *run) chunk(ctx context.Context, rd io.Reader, fn func([32]byte)) (uint64, error) {
 	r.cdc.Reset(rd)
 	var n uint64
@@ -279,7 +285,7 @@ func (r *run) chunk(ctx context.Context, rd io.Reader, fn func([32]byte)) (uint6
 			return n, nil
 		}
 		if err != nil {
-			return n, skipError{err}
+			return n, fmt.Errorf("read: %w", err)
 		}
 		n += uint64(len(p))
 		id, err := r.add(ctx, p)
