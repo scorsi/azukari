@@ -16,3 +16,6 @@ Decision / Consequences. A decision is changed by a new ADR that supersedes the 
 | [0009](0009-observability.md) | Observability |
 | [0010](0010-testing.md) | Testing |
 | [0011](0011-configuration-files.md) | Configuration of the TLS files and of azukari-backup |
+| [0012](0012-connection-limit.md) | Beyond the connection limit |
+| [0013](0013-internal-error.md) | Internal error answer |
+| [0014](0014-additional-events.md) | Additional events of azukari-server |
