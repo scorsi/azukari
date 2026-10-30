@@ -31,3 +31,4 @@ Decision / Consequences. A decision is changed by a new ADR that supersedes the 
 | [0024](0024-admin-socket-protocol.md) | Protocol of the administration socket |
 | [0025](0025-root-requires-refs.md) | A root is accepted only with its refs |
 | [0026](0026-replication-quick-check.md) | Replication compares sizes and modification times |
+| [0027](0027-replication-skipped.md) | A skipped replication run |
