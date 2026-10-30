@@ -1,0 +1,52 @@
+// Messages of the local administration socket (ADR 0024): ADR 0003's protocol, plain HTTP/1.1
+// over a Unix socket. Every call is a POST; errors are azukari.v1.Error{reason}.
+// Content-Type: application/x-protobuf.
+syntax = "proto3";
+
+package azukari.admin.v1;
+
+option go_package = "github.com/scorsi/azukari/gen/azukari/admin/v1;adminv1";
+
+// POST /v1/admin/b/<bucket>/retention
+message RetentionRequest {
+  // Count what would be deleted, delete nothing (ADR 0007).
+  bool dry_run = 1;
+}
+
+// Answered once the run is over.
+message RetentionResponse {
+  uint64 snapshots = 1;
+  // Refs lists of pruned snapshots and of interrupted runs.
+  uint64 refs = 2;
+  uint64 chunks = 3;
+  // Body bytes of every object counted.
+  uint64 bytes = 4;
+  // The run deleted nothing: asked, or the bucket's retention is not enabled.
+  bool dry_run = 5;
+}
+
+// POST /v1/admin/b/<bucket>/snapshots
+message SnapshotsRequest {
+  string namespace = 1;
+}
+
+message SnapshotsResponse {
+  // Oldest first.
+  repeated Snapshot snapshots = 1;
+}
+
+message Snapshot {
+  string name = 1;
+  // The store's receive time of the root, ns since the Unix epoch: the snapshot's age (ADR 0007).
+  int64 receive_time = 2;
+  // Body bytes of the root and of its refs list.
+  uint64 size = 3;
+}
+
+// POST /v1/admin/b/<bucket>/delete-snapshot
+message DeleteSnapshotRequest {
+  string namespace = 1;
+  string name = 2;
+}
+
+message DeleteSnapshotResponse {}

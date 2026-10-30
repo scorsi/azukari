@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -26,7 +27,8 @@ const usage = `usage: azukari-server check|run <config.toml>
 
 commands:
   check   validate the configuration file and exit (reads no SVID, mount nor bucket)
-  run     serve the buckets until SIGTERM or SIGINT; renewed SVID files are picked up, SIGHUP forces it
+  run     serve the buckets until SIGTERM or SIGINT; renewed SVID files are picked up, SIGHUP forces it;
+          the administration socket is $RUNTIME_DIRECTORY/admin.sock, none when the variable is unset
 `
 
 func main() {
@@ -94,5 +96,19 @@ func run(cfg *config.Server, log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 	srv.Schedule(ctx) // daily retention runs (ADR 0007)
+
+	// The local administration socket (ADR 0005, 0024), in the unit's RuntimeDirectory.
+	if dir := os.Getenv("RUNTIME_DIRECTORY"); dir != "" {
+		aln, err := server.ListenAdmin(filepath.Join(dir, server.AdminSocket))
+		if err != nil {
+			return err
+		}
+		go func() {
+			if err := srv.ServeAdmin(ctx, aln); err != nil {
+				log.Error("", "event", "server-failed", "err", err.Error())
+				os.Exit(1)
+			}
+		}()
+	}
 	return srv.Serve(ctx, lns)
 }

@@ -114,8 +114,9 @@
                 lib.hasSuffix "/bin/azukari-server run /etc/azukari/azukari-server.toml" sc.ExecStart
                 && lib.hasSuffix "kill -HUP $MAINPID" sc.ExecReload
                 && sc.User == "azukari"
-                && sc.Group == "azukari"
-                && sc.RuntimeDirectory == "azukari-server"
+                && sc.Group == "azukari-admin"
+                && sc.SupplementaryGroups == [ "azukari" ]
+                && sc.RuntimeDirectory == "azukari"
                 && sc.Restart == "on-failure"
                 && sc.ReadWritePaths == [ "-/srv/disk-1/azukari/backup" ]
                 && sc.LogRateLimitIntervalSec == "30s"
@@ -137,7 +138,8 @@
               assert
                 evaluated.users.users.azukari.isSystemUser
                 && evaluated.users.users.azukari.group == "azukari"
-                && evaluated.users.groups ? azukari-admin;
+                && evaluated.users.groups ? azukari-admin
+                && lib.elem self.packages.${linux}.azukari evaluated.environment.systemPackages;
               pkgs.runCommand "azukari-module-eval" { } ''
                 echo ${
                   lib.escapeShellArg (

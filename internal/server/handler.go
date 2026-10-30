@@ -294,18 +294,7 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request, o *outcome, sb 
 		}
 		resp = lr
 	}
-	out, err := proto.Marshal(resp)
-	if err != nil {
-		refuse(w, r, o, http.StatusInternalServerError, "internal", err)
-		return
-	}
-	h := w.Header()
-	h.Set("Content-Type", "application/x-protobuf")
-	h.Set("Content-Length", strconv.Itoa(len(out)))
-	o.code = http.StatusOK
-	writeHeader(w, o.code)
-	n, _ := w.Write(out)
-	o.bytes = int64(n)
+	reply(w, r, o, resp)
 }
 
 func (s *Server) get(w http.ResponseWriter, r *http.Request, o *outcome, b *bucket.Bucket, name string) {

@@ -78,6 +78,8 @@ in
     users.groups.azukari = { };
     # Owner of the local administration socket (ADR 0005); the deployment adds operators.
     users.groups.azukari-admin = { };
+    # The operator command (ADR 0024).
+    environment.systemPackages = [ cfg.package ];
 
     systemd.services.azukari-server = {
       description = "azukari store";
@@ -96,8 +98,12 @@ in
         ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
         Restart = "on-failure";
         User = "azukari";
-        Group = "azukari";
-        RuntimeDirectory = "azukari-server";
+        # The process's group is the administration socket's: $RUNTIME_DIRECTORY/admin.sock,
+        # mode 0660, group azukari-admin (ADR 0005, 0024). Its files are 0600/0700 (UMask): the
+        # group gives operators nothing else. `azukari` stays for the SVID files the CA writes.
+        Group = "azukari-admin";
+        SupplementaryGroups = [ "azukari" ];
+        RuntimeDirectory = "azukari";
         # `-`: a bucket whose disk is absent has no `path`, and must not fail the unit.
         ReadWritePaths = lib.unique (map (b: "-${b.path}") buckets);
         # One line per request: 1000 lines/s sustained before journald drops (ADR 0009).
