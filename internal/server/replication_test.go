@@ -173,6 +173,43 @@ func TestReplicate(t *testing.T) {
 	}
 }
 
+// A chunk pruned while the replica was unreachable and stored again (same size, new header)
+// is copied again (ADR 0026).
+func TestReplicateRecreated(t *testing.T) {
+	e := start(t)
+	r := localReplica(t)
+	ctx := context.Background()
+	bkt, cp := e.cfg.Buckets[0].Path, filepath.Join(r.Destination, "backup")
+	c, _, _ := snapshot(t, e, "s1", "c1")
+	snapshot(t, e, "s2", "c2") // retention keeps the newest snapshot
+	// Received long before its recreation, as retention's grace makes it in practice: rsync
+	// compares times to the second.
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(filepath.Join(bkt, "objects", c), old, old); err != nil {
+		t.Fatal(err)
+	}
+	e.srv.Replicate(ctx, "backup", r)
+	sameTree(t, bkt, cp)
+	before := tree(t, cp)["objects/"+c]
+
+	// No run while s1 and its chunk are pruned and the chunk stored again.
+	e.srv.now = func() time.Time { return time.Now().Add(30 * day) }
+	e.srv.buckets["backup"].ret.Enabled = true
+	if p, err := e.srv.RunRetention("backup", false); err != nil || p.Chunks != 1 {
+		t.Fatalf("prune: %+v, %v", p, err)
+	}
+	store(t, e, c, "c1")
+	if after := tree(t, bkt)["objects/"+c]; len(after) != len(before) || after == before {
+		t.Fatalf("recreated chunk: %d bytes, same as before %v", len(after), after == before)
+	}
+
+	e.srv.Replicate(ctx, "backup", r)
+	sameTree(t, bkt, cp)
+	if done := events(t, e, "replication-completed"); len(done) != 2 || done[1]["files"] != 1.0 {
+		t.Fatalf("replication-completed: %v\n%s", done, e.logs)
+	}
+}
+
 // Guards skip a run and touch nothing; a FORMAT mismatch or an rsync failure fails it.
 func TestReplicateRefused(t *testing.T) {
 	e := start(t)

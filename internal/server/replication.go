@@ -29,7 +29,7 @@ import (
 //  1. rsync -r --include=/FORMAT --exclude=* <bucket>/ D/B/
 //     FORMAT first (rsync creates D/B/).
 //  2. rsync -r --exclude=/tmp/ --exclude=/objects/*/snapshots/** <bucket>/ D/B/
-//     every new object except the snapshot roots; tmp/ never.
+//     every new or recreated object except the snapshot roots; tmp/ never.
 //  3. rsync --files-from=- <bucket>/ D/B/, the roots listed before step 1 on stdin.
 //     Only roots stored before the run: their refs (ADR 0025) and the chunks those name
 //     were there too, so step 2 copied them. A root stored since waits for the next run.
@@ -40,8 +40,11 @@ import (
 //     deleted. Retention cannot run meanwhile (served.run), so the bucket's state is one that
 //     retention left.
 //
-// Every call adds --size-only (objects never change: names and sizes are compared, never
-// contents nor times) and --stats --no-human-readable (counts parsed from its output). rsync
+// Every call adds -t and keeps rsync's default quick check (ADR 0026): sizes and modification
+// times are compared, never contents. The store writes each object when it receives it, so a
+// key that retention removed and a later backup stored again (same size, new header) has a
+// new time and is copied again. Every call also adds --stats --no-human-readable (counts
+// parsed from its output). rsync
 // writes each file under a temporary name and renames it when complete (its default, never
 // --inplace): a cut run leaves only complete objects. Kind ssh adds -e with sshCommand.
 //
@@ -279,7 +282,7 @@ func (s *Server) rsync(ctx context.Context, r config.Replica, stdin io.Reader, c
 	if s.onPhase != nil {
 		s.onPhase(phase)
 	}
-	args = append([]string{"--size-only", "--fsync", "--timeout=" + strconv.Itoa(rsyncTimeout), "--stats", "--no-human-readable"}, args...)
+	args = append([]string{"-t", "--fsync", "--timeout=" + strconv.Itoa(rsyncTimeout), "--stats", "--no-human-readable"}, args...)
 	if r.Kind == "ssh" {
 		args = append([]string{"-e", sshCommand(r)}, args...)
 	}
