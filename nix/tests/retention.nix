@@ -32,7 +32,6 @@ let
           server = "https://127.0.0.1:8443";
           inherit bucket;
           data_key_file = "${dataKey}";
-          paths = [ "/srv/tree-${node}" ];
           tls = {
             trust_domain = "example.org";
             server_id = t.id "store" "azukari-server";
@@ -40,6 +39,7 @@ let
             key_file = "${t.ca}/${node}/key.pem";
             bundle_file = "${t.ca}/bundle.pem";
           };
+          exports.tree.paths = [ "/srv/tree-${node}" ];
         };
   };
 

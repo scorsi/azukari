@@ -45,7 +45,7 @@ def "main mount" [] {
 
 def "main mounted" [] {
   wait-logged bucket-created archive
-  assert equal (open --raw /srv/disk2/azukari/archive/FORMAT | str trim -r -c "\n") "1"
+  assert equal (open --raw /srv/disk2/azukari/archive/FORMAT | str trim -r -c "\n") "2"
   assert equal (call node-a PUT node-a/chunks/c1 two --bucket archive) "201"
   assert equal (call node-a GET node-a/chunks/c1 --bucket archive) "200 two"
   assert equal (call node-a GET node-a/chunks/c1) "200 one"

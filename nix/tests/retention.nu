@@ -11,6 +11,8 @@ const objects = "/srv/disk1/azukari/backup/objects/node-a"
 # retention.nix's keep and grace, in seconds.
 const keep = 60
 const grace = 150
+# Every file backs up its node's tree as the export `tree` (ADR 0030).
+const export = "tree"
 # The interrupted run: its refs without a root naming two chunks, identifiers 32 × "a" and 32 × "b".
 const orphan = "20260101T000000Z-0badc0de"
 
@@ -33,7 +35,7 @@ def ok [cmd: list<string>]: nothing -> string {
 }
 
 def backup [node: string, bucket: string = "backup"] {
-  ok [$env.AZUKARI_BACKUP run $"/etc/azukari-test/($node)-($bucket).toml"] | ignore
+  ok [$env.AZUKARI_BACKUP run $"/etc/azukari-test/($node)-($bucket).toml" $export] | ignore
 }
 
 # The operator command, as a member of azukari-admin.
@@ -41,7 +43,7 @@ def azukari [...args: string]: nothing -> string { ok [runuser -u operator -- az
 
 # A namespace's snapshots, oldest first: name and receive time (Unix seconds).
 def snapshots [ns: string, bucket: string = "backup"]: nothing -> list<record> {
-  azukari snapshots $bucket $ns | lines | where $it != "" | parse "{name} {time} {size}"
+  azukari snapshots $bucket $ns $export | lines | where $it != "" | parse "{name} {time} {size}"
   | each {|s| {name: $s.name, at: (^date -u -d $s.time +%s | into int)} }
 }
 
@@ -56,7 +58,7 @@ def retention [bucket: string, --dry-run]: nothing -> string {
 }
 
 def orphan-files []: nothing -> list<string> {
-  [$"($objects)/refs/($orphan)" (chunk-file 61) (chunk-file 62)]
+  [$"($objects)/refs/($export)/($orphan)" (chunk-file 61) (chunk-file 62)]
 }
 
 def chunk-file [hx: string]: nothing -> string { $"($objects)/chunks/($hx)/(1..32 | each { $hx } | str join)" }
@@ -75,7 +77,7 @@ def "main start" [] { jump "03:31:00" }
 def "main socket" [] {
   wait-until "admin.sock" { "/run/azukari/admin.sock" | path exists }
   assert equal (^stat -c '%a %G' /run/azukari/admin.sock | str trim) "660 azukari-admin"
-  let r = cli [runuser -u stranger -- azukari snapshots backup node-a]
+  let r = cli [runuser -u stranger -- azukari snapshots backup node-a $export]
   assert ($r.exit_code == 1 and ($r.stderr | str contains "permission denied")) $r.stderr
   assert equal (names node-a) []
   assert equal (logged admin-call '"uid":1601') 0
@@ -108,7 +110,7 @@ def "main aged" [] {
     assert equal (call node-a PUT $"node-a/chunks/($hx)/($id)" $"interrupted-($hx)") "201"
   }
   let refs = ("" | fill -c a -w 32) + ("" | fill -c b -w 32)
-  assert equal (call node-a PUT $"node-a/refs/($orphan)" $refs) "201"
+  assert equal (call node-a PUT $"node-a/refs/($export)/($orphan)" $refs) "201"
   now | save -f /tmp/orphan-at
 }
 
@@ -135,11 +137,11 @@ def "main prune" [] {
 
 def "main admin" [] {
   let a = names node-a
-  assert equal (azukari delete-snapshot backup node-a $a.0 | str trim) $"deleted node-a ($a.0)"
+  assert equal (azukari delete-snapshot backup node-a $export $a.0 | str trim) $"deleted node-a ($export) ($a.0)"
   assert equal (names node-a) [$a.1]
-  let r = cli [runuser -u operator -- azukari delete-snapshot backup node-a $a.0]
+  let r = cli [runuser -u operator -- azukari delete-snapshot backup node-a $export $a.0]
   assert ($r.exit_code == 1 and ($r.stderr | str contains "snapshot-unknown")) $r.stderr
-  let deleted = ['"uid":1600' '"call":"delete-snapshot"' $'"snapshot":"($a.0)"']
+  let deleted = ['"uid":1600' '"call":"delete-snapshot"' $'"export":"($export)","snapshot":"($a.0)"']
   assert equal (logged admin-call ...($deleted ++ ['"code":200'])) 1
   assert equal (logged admin-call ...($deleted ++ ['"code":404'])) 1
   assert ((logged admin-call '"uid":1600' '"call":"snapshots"' '"namespace":"node-a"') > 0)
@@ -161,7 +163,7 @@ def "main race" [] {
   ^head -c 32M /dev/urandom | save /srv/tree-node-a/c-rest
   let asked = missing-calls
   (^systemd-run --unit=race-backup -p CPUQuota=3% -p RemainAfterExit=yes
-    $env.AZUKARI_BACKUP run /etc/azukari-test/node-a-backup.toml)
+    $env.AZUKARI_BACKUP run /etc/azukari-test/node-a-backup.toml $export)
   wait-until "the run's first missing" { (missing-calls) > $asked }
   ^systemctl freeze race-backup.service
   let r = retention backup
@@ -175,7 +177,7 @@ def "main race" [] {
   ^journalctl --sync
   let name = logged-snapshot
   assert equal (names node-a | last) $name
-  ok [$env.AZUKARI_BACKUP restore --verify /etc/azukari-test/node-a-backup.toml $name /tmp/verify-race] | ignore
+  ok [$env.AZUKARI_BACKUP restore --verify /etc/azukari-test/node-a-backup.toml $export $name /tmp/verify-race] | ignore
 }
 
 def logged-snapshot []: nothing -> string {

@@ -424,6 +424,10 @@
               inherit self pkgs;
               inherit (inputs) nisshi masu;
             };
+            exports = import ./nix/tests/exports.nix {
+              inherit self pkgs;
+              inherit (inputs) nisshi masu;
+            };
           };
 
           devShells.default = pkgs.mkShellNoCC {

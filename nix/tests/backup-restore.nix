@@ -6,7 +6,8 @@
 # data key and SVID restores it as root, and the trees compare equal (`diff -r` and a stat
 # listing). One file changes, the second backup adds only a few chunks, the first snapshot still
 # restores the original tree; `snapshots` and `restore --verify` run unprivileged; a file the
-# group cannot read fails the run (ADR 0005, 0006, 0011).
+# group cannot read fails the run (ADR 0005, 0006, 0011). Each export has its own unit and
+# snapshots, and alice's restores alone (ADR 0030).
 args@{
   self,
   pkgs,
@@ -124,7 +125,7 @@ pkgs.testers.runNixOSTest {
   testScript = ''
     def copy(tag):
         """node-a's tree, listing and snapshot `tag` (backup-restore.nu) to the restorer's /tmp."""
-        for f in (f"{tag}.tar", f"{tag}.listing", f"{tag}.snapshot"):
+        for f in (f"{tag}.tar", f"{tag}.listing", f"{tag}.snapshot", "alice.snapshot"):
             node_a.copy_from_machine(f"/tmp/{f}")
             restorer.copy_from_host(str(node_a.out_dir / f), f"/tmp/{f}")
 
@@ -139,7 +140,7 @@ pkgs.testers.runNixOSTest {
     with subtest("node-a's tree: empty files, large random, text, nesting, links, modes, owners, mtimes"):
         node_a.succeed("${nu} tree")
 
-    with subtest("first backup: the export, one snapshot, restored on the fresh VM equal to the tree"):
+    with subtest("first backup: each export its own snapshot, restored alone on the fresh VM equal to the tree"):
         node_a.succeed("${nu} first-backup")
         store.succeed("${nu} chunks-first")
         copy("one")
@@ -164,7 +165,8 @@ pkgs.testers.runNixOSTest {
         node_a.succeed("${nu} syscalls")
 
     # Node logs (the unit's journal, the CLI's stderr) pass the log schema; then the store's.
-    node_a.succeed("journalctl --sync; journalctl _SYSTEMD_UNIT=azukari-backup.service -o cat"
+    node_a.succeed("journalctl --sync; journalctl _SYSTEMD_UNIT=azukari-backup-data.service"
+                   " _SYSTEMD_UNIT=azukari-backup-alice.service -o cat"
                    " | ${nisshi.lib.validateLogs.${system}} validate --logs")
     for m in (node_a, restorer):
         m.succeed("${nisshi.lib.validateLogs.${system}} validate --logs < /var/log/azukari-cli.log")

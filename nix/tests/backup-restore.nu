@@ -8,6 +8,8 @@ use common.nu *
 const cfg = "/etc/azukari/azukari-backup.toml"
 const cli_log = "/var/log/azukari-cli.log"
 const data = "/persist/backups/data"
+# The export `data` is the one this test backs up and restores; `alice` is checked alone (ADR 0030).
+const unit = "azukari-backup-data.service"
 const chunks_dir = "/srv/disk1/azukari/backup/objects/node-a/chunks"
 
 def main [] {}
@@ -24,8 +26,8 @@ def cli [args: list<string>, --user]: nothing -> string {
   $r.stdout
 }
 
-def snapshots []: nothing -> list<string> {
-  cli --user [snapshots $cfg] | lines | where ($it | str trim) != "" | each { str trim | split row -r '\s+' | first } | sort
+def snapshots [export: string = "data"]: nothing -> list<string> {
+  cli --user [snapshots $cfg $export] | lines | where ($it | str trim) != "" | each { str trim | split row -r '\s+' | first } | sort
 }
 
 # Path, type, mode, numeric owner and group, mtime, link target of every entry.
@@ -35,9 +37,9 @@ def listing [root: string]: nothing -> string {
 }
 
 # Oneshot: start returns once the export and the run ended, and fails if either failed.
-def backup [] { ^systemctl start azukari-backup.service }
+def backup [] { ^systemctl start $unit }
 
-def unit-events [event: string]: nothing -> int { logged $event --unit azukari-backup.service }
+def unit-events [event: string]: nothing -> int { logged $event --unit $unit }
 
 # The last /tmp/err holds a restore-completed line with `fields`.
 def restore-completed [fields: string] {
@@ -55,8 +57,8 @@ def capture [tag: string] {
 
 # node-a: the run is azukari-backup with no capability.
 def "main unit" [] {
-  assert equal (^systemctl show -P User azukari-backup.service | str trim) "azukari-backup"
-  assert equal (^systemctl show -P CapabilityBoundingSet azukari-backup.service | str trim) ""
+  assert equal (^systemctl show -P User $unit | str trim) "azukari-backup"
+  assert equal (^systemctl show -P CapabilityBoundingSet $unit | str trim) ""
 }
 
 # node-a: empty files, large random, text, nesting, links, modes, owners, mtimes.
@@ -107,8 +109,14 @@ def "main first-backup" [] {
   let first = snapshots
   assert equal ($first | length) 1 ($first | str join " ")
   $first.0 | save -f /tmp/one.snapshot
-  # The non-root export wrote through the base.
+  # The non-root export, run by its own unit, wrote through the base: its own snapshot, and
+  # data's run did not back it up.
+  ^systemctl start azukari-backup-alice.service
   assert equal (stat '%U %G %a' /persist/backups/alice/hello) "alice azukari-export-alice 640"
+  let alice = snapshots alice
+  assert equal ($alice | length) 1 ($alice | str join " ")
+  $alice.0 | save -f /tmp/alice.snapshot
+  assert equal (snapshots) $first "alice's run added a snapshot to data"
 }
 
 # store: the chunks a backup left, kept in /tmp/chunks for `chunks-added`.
@@ -137,20 +145,24 @@ def "main restore" [tag: string, orig: string] {
   let snapshot = open $"/tmp/($orig).snapshot"
   let target = $"/restore-($tag)"
   ^mkdir $target $"/verify-($tag)"
-  cli [restore $cfg $snapshot $target]
+  cli [restore $cfg data $snapshot $target]
   restore-completed '"verify":false,"owners":true'
   ^diff -r --no-dereference $"/orig-($orig)/data" $"($target)($data)"
   let want = open $"/tmp/($orig).listing"
   let got = listing $"($target)($data)"
   assert ($got == $want) $"stat listings differ:\n($want)\n---\n($got)"
-  cli --user [restore --verify $cfg $snapshot $"/verify-($tag)"]
+  cli --user [restore --verify $cfg data $snapshot $"/verify-($tag)"]
   restore-completed '"verify":true,"owners":false'
   assert equal (ls -a $"/verify-($tag)" | length) 0
 }
 
-# restorer: the non-root export's file came back.
+# restorer: the non-root export's snapshot restores alone, though the restorer's file has no
+# export `alice` (the restore checks the key only); data's restore held none of it.
 def "main alice" [] {
-  assert equal (open --raw /restore-one/persist/backups/alice/hello | str trim -r -c "\n") "hello-from-alice"
+  assert (not ("/restore-one/persist/backups/alice" | path exists)) "data's snapshot holds alice"
+  cli [restore $cfg alice (open /tmp/alice.snapshot) /restore-alice]
+  assert equal (ls -a /restore-alice/persist/backups | get name | path basename) [alice]
+  assert equal (open --raw /restore-alice/persist/backups/alice/hello | str trim -r -c "\n") "hello-from-alice"
 }
 
 # node-a: one file changes, the second backup.
@@ -172,8 +184,8 @@ def "main unreadable" [] {
   # Group azukari-backup from the setgid directory, but no group read: no capability reads it.
   "secret\n" | save /srv/fixture/secret
   ^chmod 0600 /srv/fixture/secret
-  assert ((^systemctl start azukari-backup.service | complete).exit_code != 0) "the run succeeded"
-  assert ((logged backup-failed $"($data)/secret" --unit azukari-backup.service) > 0)
+  assert ((^systemctl start $unit | complete).exit_code != 0) "the run succeeded"
+  assert ((logged backup-failed $"($data)/secret" --unit $unit) > 0)
   assert equal (snapshots) (open /tmp/both.json) "a failed run published a snapshot"
   ^chmod 0640 /srv/fixture/secret
   backup
@@ -184,8 +196,8 @@ def "main unreadable" [] {
 # node-a: no syscall the run made was denied. SystemCallFilter= kills with SIGSYS (status 31),
 # logged by systemd and the kernel's audit.
 def "main syscalls" [] {
-  let unit = ^journalctl -u azukari-backup.service | lines | where $it =~ 'status=31/SYS|SIGSYS'
-  assert equal $unit []
+  let killed = ^journalctl -u 'azukari-backup-*.service' | lines | where $it =~ 'status=31/SYS|SIGSYS'
+  assert equal $killed []
   let audit = ^journalctl -k | lines | where $it =~ 'type=1326.*azukari'
   assert equal $audit []
 }

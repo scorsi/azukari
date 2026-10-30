@@ -7,6 +7,8 @@ use common.nu *
 
 const cfg = "/etc/azukari-test/node-a.toml"
 const tree = "/srv/tree-node-a"
+# node-a's file backs up its tree as the export `tree` (ADR 0030).
+const export = "tree"
 const copy = "/copy/backup"
 const cli_log = "/var/log/azukari-cli.log"
 
@@ -68,9 +70,9 @@ def "main backup" [] {
   ^touch -d '2003-04-05 06:07:08.25' a/b a .
   listing $tree | save -f /tmp/tree.listing
   let n = replicated
-  run-external $env.AZUKARI_BACKUP run $cfg
+  run-external $env.AZUKARI_BACKUP run $cfg $export
   wait-until "two runs of local" { (replicated) >= $n + 2 }
-  let names = ^azukari snapshots backup node-a | lines | where $it != "" | parse "{name} {time} {size}" | get name
+  let names = ^azukari snapshots backup node-a $export | lines | where $it != "" | parse "{name} {time} {size}" | get name
   assert equal ($names | length) 1 ($names | str join " ")
   $names.0 | save -f /tmp/snapshot
 }
@@ -87,14 +89,14 @@ def "main extract" [] {
   assert (not ("/etc/azukari" | path exists)) "the restorer has a store or a backup unit"
   mkdir /copy
   ^tar --numeric-owner -C /copy -xpf /tmp/replica.tar
-  assert equal (open --raw $"($copy)/FORMAT") "1\n"
+  assert equal (open --raw $"($copy)/FORMAT") "2\n"
   let chunks = ^find $"($copy)/objects/node-a/chunks" -type f | lines | length
   assert ($chunks >= 3) $"($chunks) chunks for a 12 MiB file \(chunks are 4 MiB at most\)"
 }
 
 # restorer: `snapshots --from-dir` lists exactly the store's snapshot.
 def "main snapshots" [] {
-  let r = ok [snapshots --from-dir $copy $cfg]
+  let r = ok [snapshots --from-dir $copy $cfg $export]
   let names = $r.stdout | lines | where ($it | str trim) != "" | each { str trim | split row -r '\s+' | first }
   assert equal $names [(snapshot)]
 }
@@ -102,7 +104,7 @@ def "main snapshots" [] {
 # restorer: `restore --verify --from-dir` passes and writes nothing.
 def "main verify" [] {
   mkdir /verify
-  let r = ok [restore --verify --from-dir $copy $cfg (snapshot) /verify]
+  let r = ok [restore --verify --from-dir $copy $cfg $export (snapshot) /verify]
   has-event $r restore-completed '"verify":true,"owners":false'
   assert equal (ls -a /verify | length) 0
 }
@@ -110,7 +112,7 @@ def "main verify" [] {
 # restorer: `restore --from-dir` as root into an empty directory equals the store's tree.
 def "main restore" [] {
   mkdir /restore
-  let r = ok [restore --from-dir $copy $cfg (snapshot) /restore]
+  let r = ok [restore --from-dir $copy $cfg $export (snapshot) /restore]
   has-event $r restore-completed '"verify":false,"owners":true'
   let want = open /tmp/tree.listing
   let got = listing $"/restore($tree)"
@@ -127,7 +129,7 @@ def "main tampered" [] {
   (($byte + 1) mod 256) | into binary | bytes at 0..0 | ^dd $"of=($chunk)" bs=1 $"seek=($at)" conv=notrunc status=none
   assert not equal (^od -An -tu1 -j $at -N 1 $chunk | str trim | into int) $byte "no byte flipped"
   mkdir /tampered-target
-  let r = cli [restore --from-dir /tampered/backup $cfg (snapshot) /tampered-target]
+  let r = cli [restore --from-dir /tampered/backup $cfg $export (snapshot) /tampered-target]
   assert ($r.exit_code != 0) "the restore of a tampered copy succeeded"
   has-event $r restore-failed
 }

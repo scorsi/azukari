@@ -10,18 +10,20 @@ const local = "/srv/disk2/azukari/backup"
 # replication.nix's keep and grace, in seconds.
 const keep = 60
 const replicas = [offsite local]
+# Every file backs up its node's tree as the export `tree` (ADR 0030).
+const export = "tree"
 
 def main [] {}
 
 def now []: nothing -> int { ^date -u +%s | into int }
 
 def backup [node: string] {
-  run-external $env.AZUKARI_BACKUP run $"/etc/azukari-test/($node)-backup.toml"
+  run-external $env.AZUKARI_BACKUP run $"/etc/azukari-test/($node)-backup.toml" $export
 }
 
 # A namespace's snapshot names, oldest first (`azukari snapshots`, as root).
 def names [ns: string]: nothing -> list<string> {
-  ^azukari snapshots backup $ns | lines | where $it != "" | parse "{name} {time} {size}" | get name
+  ^azukari snapshots backup $ns $export | lines | where $it != "" | parse "{name} {time} {size}" | get name
 }
 
 # A copy of the bucket: "<sha256>  <path>" per file, sorted, tmp/ left out (never copied).
@@ -90,7 +92,7 @@ def "main first" [] {
   backup node-b
   settle
   let snap = names node-a | last
-  run-external ...[$env.AZUKARI_BACKUP restore --verify /etc/azukari-test/node-a-backup.toml $snap /tmp/verify-first]
+  run-external ...[$env.AZUKARI_BACKUP restore --verify /etc/azukari-test/node-a-backup.toml $export $snap /tmp/verify-first]
   for r in $replicas {
     assert (events replication-completed $r | any {|e| $e.files > 0 and $e.bytes > 0 }) $"($r) copied nothing"
     assert ((runs $r completed) >= 2) $"($r) runs_total completed"

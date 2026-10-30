@@ -30,7 +30,7 @@ let
     server = "https://127.0.0.1:8443";
     bucket = "backup";
     data_key_file = "${dataKey}";
-    paths = [ "/srv/tree-node-a" ];
+    exports.tree.paths = [ "/srv/tree-node-a" ];
   };
   backupFile = settings: {
     "azukari-test/node-a.toml".source = (pkgs.formats.toml { }).generate "node-a.toml" settings;
