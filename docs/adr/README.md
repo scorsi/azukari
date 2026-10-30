@@ -34,3 +34,4 @@ Decision / Consequences. A decision is changed by a new ADR that supersedes the 
 | [0027](0027-replication-skipped.md) | A skipped replication run |
 | [0028](0028-one-operator-command.md) | One operator command |
 | [0029](0029-offline-namespace.md) | The namespace of a restore from a copy |
+| [0030](0030-snapshot-per-export.md) | One snapshot per export |

@@ -68,3 +68,11 @@ The deployment's own steps live in the deployment repository.
 - `azukari backup <snapshots|restore>` runs `azukari-backup` (ADR 0028).
 - **Done when**: nixosTest `restore-from-dir` passes: the store stopped, a fresh VM restores
   from a replica directory and the trees compare equal.
+
+## M6 — One snapshot per export
+
+- Format version 2, `[exports.<name>]`, commands and module per export, retention and operator
+  calls per export (ADR 0030).
+- **Done when**: every nixosTest passes on format 2, and a nixosTest shows two exports of one node on
+  different cadences: each lists and restores alone, a timer that does not fire sends nothing, and
+  retention keeps the newest snapshot of each export.
