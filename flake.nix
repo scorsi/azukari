@@ -265,6 +265,8 @@
                 backup.users.users.azukari-backup.isSystemUser
                 && backup.users.users.azukari-backup.group == "azukari-backup"
                 && backup.users.groups ? azukari-backup;
+              # One operator command: the package, both binaries in one bin/, is installed (ADR 0028).
+              assert lib.elem self.packages.${linux}.azukari backup.environment.systemPackages;
               # No root step: the option is gone (ADR 0020).
               assert !(backup.services.azukari-backup ? preCommand);
               # Exports: unit as the service's user, its directory, ordering and paths (ADR 0021).
@@ -315,6 +317,8 @@
                 && failed parent == failed backup
                 && failed noParent == failed backup + 1;
               pkgs.runCommand "azukari-backup-module-eval" { } ''
+                # `azukari backup` finds azukari-backup in its own bin/ (ADR 0028).
+                test -x ${azukari}/bin/azukari && test -x ${azukari}/bin/azukari-backup
                 echo ${lib.escapeShellArg (builtins.unsafeDiscardStringContext (builtins.toJSON sc))} > $out
               '';
 

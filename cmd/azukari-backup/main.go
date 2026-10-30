@@ -14,8 +14,8 @@ import (
 )
 
 const usage = `usage: azukari-backup check|run <config.toml>
-       azukari-backup snapshots [--from-dir <bucket copy>] <config.toml>
-       azukari-backup restore [--verify] [--from-dir <bucket copy>] <config.toml> <snapshot> <target>
+       azukari backup snapshots [--from-dir <bucket copy>] <config.toml>
+       azukari backup restore [--verify] [--from-dir <bucket copy>] <config.toml> <snapshot> <target>
 
 commands:
   check      validate the configuration file and exit (reads no key, SVID nor path)

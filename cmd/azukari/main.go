@@ -12,7 +12,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -28,8 +30,13 @@ commands:
   retention <bucket> [--dry-run]                 run the bucket's retention now, wait for its end
   snapshots <bucket> <namespace>                 list a namespace's snapshots, oldest first
   delete-snapshot <bucket> <namespace> <name>    delete one snapshot; its chunks go at the next run
+  backup snapshots [--from-dir <bucket copy>] <config.toml>
+                                                 list this node's snapshots
+  backup restore [--verify] [--from-dir <bucket copy>] <config.toml> <snapshot> <target>
+                                                 restore a snapshot into target, an empty or absent directory
 
---socket defaults to /run/azukari/admin.sock.
+--socket defaults to /run/azukari/admin.sock. backup runs azukari-backup, installed next to
+azukari, with the same arguments, environment and privileges (ADR 0028).
 `
 
 func main() {
@@ -38,6 +45,9 @@ func main() {
 
 // run returns the exit code: 0, 1 for a refused or failed call, 2 for a usage error.
 func run(argv []string, stdout, stderr io.Writer) int {
+	if len(argv) > 0 && argv[0] == "backup" {
+		return delegate(argv[1:], stderr)
+	}
 	socket, dryRun, badFlag := "/run/azukari/admin.sock", false, false
 	var args []string
 	for i := 0; i < len(argv); i++ {
@@ -90,6 +100,26 @@ func run(argv []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "deleted %s %s\n", args[2], args[3])
 	}
 	return 0
+}
+
+// delegate replaces this process with azukari-backup from azukari's own directory, never PATH
+// (ADR 0028); it returns only on a usage error or a failed exec.
+func delegate(args []string, stderr io.Writer) int {
+	if len(args) == 0 || (args[0] != "snapshots" && args[0] != "restore") {
+		fmt.Fprint(stderr, usage)
+		return 2
+	}
+	self, err := os.Executable()
+	if err == nil {
+		self, err = filepath.EvalSymlinks(self)
+	}
+	if err == nil {
+		bin := filepath.Join(filepath.Dir(self), "azukari-backup")
+		err = syscall.Exec(bin, append([]string{bin}, args...), os.Environ())
+		err = fmt.Errorf("exec %s: %w", bin, err)
+	}
+	logging.New(stderr, slog.LevelInfo).Error("", "event", "admin-failed", "call", "backup", "err", err.Error())
+	return 1
 }
 
 // call posts req to /v1/admin/b/<bucket>/<name> on the socket and decodes the 200 into resp;

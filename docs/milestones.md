@@ -65,5 +65,6 @@ The deployment's own steps live in the deployment repository.
 ## M5 — Restore from a copy
 
 - `azukari-backup restore --from-dir <bucket copy>` (ADR 0006).
+- `azukari backup <snapshots|restore>` runs `azukari-backup` (ADR 0028).
 - **Done when**: nixosTest `restore-from-dir` passes: the store stopped, a fresh VM restores
   from a replica directory and the trees compare equal.

@@ -12,7 +12,8 @@
 - `azukari-server`: the store.
 - `azukari-backup`: the backup component of a node: chunks, deduplicates, encrypts, pushes,
   restores.
-- `azukari`: the operator command line (administration through the store's local socket).
+- `azukari`: the operator command line (administration through the store's local socket);
+  `azukari backup snapshots|restore` runs the node's `azukari-backup` installed next to it.
 
 ## Restore without the store
 
@@ -20,8 +21,8 @@ When the store is gone, a node restores from a copy of the bucket's directory (a
 or the bucket's disk mounted elsewhere) with only its configuration file and data key:
 
 ```
-azukari-backup snapshots --from-dir /mnt/replica/backup /etc/azukari/azukari-backup.toml
-azukari-backup restore [--verify] --from-dir /mnt/replica/backup /etc/azukari/azukari-backup.toml <snapshot> <empty target>
+azukari backup snapshots --from-dir /mnt/replica/backup /etc/azukari/azukari-backup.toml
+azukari backup restore [--verify] --from-dir /mnt/replica/backup /etc/azukari/azukari-backup.toml <snapshot> <empty target>
 ```
 
 `--from-dir` names the directory holding `FORMAT` and `objects/`. No network, no SVID:

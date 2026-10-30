@@ -180,6 +180,8 @@ in
     ) cfg.exports;
 
     environment.etc."azukari/azukari-backup.toml".source = configFile;
+    # `azukari backup …` runs the `azukari-backup` of the same bin/ (ADR 0028).
+    environment.systemPackages = [ cfg.package ];
 
     services.azukari-backup.settings.paths = lib.mkIf (cfg.exports != { }) (
       lib.mapAttrsToList (name: _: exportDir name) cfg.exports
