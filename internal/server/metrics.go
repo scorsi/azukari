@@ -36,11 +36,12 @@ type metrics struct {
 
 type reqKey struct{ bucket, call, code string }
 
-type nsKey struct{ bucket, namespace string }
+type nsKey struct{ bucket, namespace, export string }
 
-// seedSnapshots reads the newest snapshot of every namespace allowed in sb (ADR 0009: the
-// freshness series survives a restart). A namespace without one, or on an unavailable
-// bucket, starts at 0.
+// seedSnapshots reads the newest snapshot of each export of every namespace allowed in sb
+// (ADR 0009, 0030: the freshness series survive a restart). The store knows a node's exports
+// only from their snapshots: an export without one, or on an unavailable bucket, has no
+// series until its first snapshot arrives.
 func (s *Server) seedSnapshots(name string, sb *served) {
 	for id := range sb.nodes {
 		// A node ID the configuration checked: its host segment is the namespace (ADR 0005).
@@ -52,24 +53,23 @@ func (s *Server) seedSnapshots(name string, sb *served) {
 		if err != nil {
 			continue
 		}
-		k := nsKey{name, ns}
-		s.m.snapshots[k] = 0
 		if sb.b == nil {
 			continue
 		}
-		at, ok, err := sb.b.LastSnapshot(ns)
+		last, err := sb.b.LastSnapshots(ns)
 		if err != nil {
 			s.log.Error("", "event", "snapshot-scan-failed", "bucket", name, "namespace", ns, "err", err.Error())
-		} else if ok {
-			s.m.snapshots[k] = at.Unix()
+		}
+		for exp, at := range last {
+			s.m.snapshots[nsKey{name, ns, exp}] = at.Unix()
 		}
 	}
 }
 
 // recordSnapshot is the default OnSnapshot: azukari_last_snapshot_timestamp_seconds.
-func (s *Server) recordSnapshot(bucket, namespace string, at time.Time) {
+func (s *Server) recordSnapshot(bucket, namespace, export string, at time.Time) {
 	s.m.mu.Lock()
-	s.m.snapshots[nsKey{bucket, namespace}] = at.Unix()
+	s.m.snapshots[nsKey{bucket, namespace, export}] = at.Unix()
 	s.m.mu.Unlock()
 }
 
@@ -152,11 +152,11 @@ func (s *Server) writeMetrics(w io.Writer, version string) {
 	for _, n := range sorted(s.m.received, strings.Compare) {
 		fmt.Fprintf(&b, "azukari_received_bytes_total{bucket=%s} %d\n", q(n), s.m.received[n])
 	}
-	family(&b, "azukari_last_snapshot_timestamp_seconds", "gauge", "Receive time of each namespace's newest snapshot, 0 for none.")
+	family(&b, "azukari_last_snapshot_timestamp_seconds", "gauge", "Receive time of the newest snapshot of each export of each namespace.")
 	for _, k := range sorted(s.m.snapshots, func(a, b nsKey) int {
-		return cmp.Or(strings.Compare(a.bucket, b.bucket), strings.Compare(a.namespace, b.namespace))
+		return cmp.Or(strings.Compare(a.bucket, b.bucket), strings.Compare(a.namespace, b.namespace), strings.Compare(a.export, b.export))
 	}) {
-		fmt.Fprintf(&b, "azukari_last_snapshot_timestamp_seconds{bucket=%s,namespace=%s} %d\n", q(k.bucket), q(k.namespace), s.m.snapshots[k])
+		fmt.Fprintf(&b, "azukari_last_snapshot_timestamp_seconds{bucket=%s,namespace=%s,export=%s} %d\n", q(k.bucket), q(k.namespace), q(k.export), s.m.snapshots[k])
 	}
 	family(&b, "azukari_prune_last_success_timestamp_seconds", "gauge", "End of the last retention run that deleted for real, 0 for none since start.")
 	for _, n := range sorted(s.m.pruneSuccess, strings.Compare) {

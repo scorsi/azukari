@@ -31,7 +31,7 @@ func TestCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := bucket.New(path, 1024, 0)
-	for _, k := range []string{"node-a/snapshots/s1", "node-a/snapshots/s2"} {
+	for _, k := range []string{"node-a/snapshots/data/s1", "node-a/snapshots/data/s2"} {
 		if _, err := b.Put(strings.Replace(k, "snapshots", "refs", 1), 0, sha256.Sum256(nil), strings.NewReader("")); err != nil {
 			t.Fatal(err)
 		}
@@ -53,20 +53,21 @@ func TestCommand(t *testing.T) {
 		code := run(append([]string{"--socket", sock}, args...), &out, &errOut)
 		return code, out.String(), errOut.String()
 	}
-	if code, out, _ := cmd("snapshots", "backup", "node-a"); code != 0 || !strings.HasPrefix(out, "s1 ") ||
+	if code, out, _ := cmd("snapshots", "backup", "node-a", "data"); code != 0 || !strings.HasPrefix(out, "s1 ") ||
 		len(strings.Split(strings.TrimSpace(out), "\n")) != 2 || !strings.HasSuffix(out, " 4\n") {
 		t.Fatalf("snapshots = %d %q", code, out)
 	}
-	if code, out, _ := cmd("delete-snapshot", "backup", "node-a", "s1"); code != 0 || out != "deleted node-a s1\n" {
+	if code, out, _ := cmd("delete-snapshot", "backup", "node-a", "data", "s1"); code != 0 || out != "deleted node-a data s1\n" {
 		t.Fatalf("delete = %d %q", code, out)
 	}
 	if code, out, _ := cmd("retention", "backup", "--dry-run"); code != 0 || out != "snapshots=0 refs=0 chunks=0 bytes=0 dry_run=true\n" {
 		t.Fatalf("retention = %d %q", code, out)
 	}
-	if code, _, errOut := cmd("delete-snapshot", "backup", "node-a", "s1"); code != 1 || !strings.Contains(errOut, `"reason":"snapshot-unknown"`) {
+	if code, _, errOut := cmd("delete-snapshot", "backup", "node-a", "data", "s1"); code != 1 || !strings.Contains(errOut, `"reason":"snapshot-unknown"`) {
 		t.Fatalf("delete again = %d %q", code, errOut)
 	}
-	for _, bad := range [][]string{{}, {"snapshots", "backup"}, {"retention", "backup", "--force"}, {"snapshots", "backup", "n", "--dry-run"}} {
+	for _, bad := range [][]string{{}, {"snapshots", "backup"}, {"snapshots", "backup", "n"}, {"delete-snapshot", "backup", "n", "s1"},
+		{"retention", "backup", "--force"}, {"snapshots", "backup", "n", "data", "--dry-run"}} {
 		if code, _, _ := cmd(bad...); code != 2 {
 			t.Errorf("%q = %d, want 2", bad, code)
 		}

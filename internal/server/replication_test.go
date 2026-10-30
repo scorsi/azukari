@@ -33,7 +33,7 @@ func localReplica(t *testing.T) config.Replica {
 func snapshot(t *testing.T, e *env, name, chunk string) (c, refs, root string) {
 	id := sha256.Sum256([]byte(chunk))
 	x := fmt.Sprintf("%x", id)
-	c, refs, root = "node-a/chunks/"+x[:2]+"/"+x, "node-a/refs/"+name, "node-a/snapshots/"+name
+	c, refs, root = "node-a/chunks/"+x[:2]+"/"+x, "node-a/refs/data/"+name, "node-a/snapshots/data/"+name
 	store(t, e, c, chunk)
 	store(t, e, refs, string(id[:]))
 	store(t, e, root, "root "+name)
@@ -335,7 +335,9 @@ func TestReplicateCancel(t *testing.T) {
 	bin := t.TempDir()
 	pid := filepath.Join(bin, "pid")
 	// The child sleep keeps rsync's stdout open: only killing the group ends it before WaitDelay.
-	script := fmt.Sprintf("#!/bin/sh\necho $$ > %s\n%s 600\n", pid, sleep)
+	// The pid file is written once sleep is forked: a group kill racing the shell's fork could
+	// miss the new child (seen on darwin), which then held stdout past the 5 s bound below.
+	script := fmt.Sprintf("#!/bin/sh\n%s 600 &\necho $$ > %s\nwait\n", sleep, pid)
 	if err := os.WriteFile(filepath.Join(bin, "rsync"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}

@@ -29,8 +29,8 @@ func TestRunRetention(t *testing.T) {
 	x := fmt.Sprintf("%x", id)
 	store(t, e, "node-a/chunks/"+x[:2]+"/"+x, "c1")
 	for _, s := range []string{"s1", "s2"} {
-		store(t, e, "node-a/refs/"+s, string(id[:]))
-		store(t, e, "node-a/snapshots/"+s, "root "+s)
+		store(t, e, "node-a/refs/data/"+s, string(id[:]))
+		store(t, e, "node-a/snapshots/data/"+s, "root "+s)
 	}
 	later := time.Now().Add(30 * day)
 	e.srv.now = func() time.Time { return later }
@@ -45,7 +45,7 @@ func TestRunRetention(t *testing.T) {
 		if p, err := e.srv.RunRetention("backup", dryRun); err != nil || p != want {
 			t.Fatalf("dry run %d = %+v, %v", i, p, err)
 		}
-		if l, err := e.srv.Snapshots("backup", "node-a"); err != nil || len(l) != 2 {
+		if l, err := e.srv.Snapshots("backup", "node-a", "data"); err != nil || len(l) != 2 {
 			t.Fatalf("Snapshots after dry run = %v, %v", l, err)
 		}
 	}
@@ -67,14 +67,14 @@ func TestRunRetention(t *testing.T) {
 		!strings.Contains(m, sample("prune_last_success_timestamp_seconds")+fmt.Sprint(later.Unix())+"\n") {
 		t.Fatalf("metrics after the run:\n%s", m)
 	}
-	l, err := e.srv.Snapshots("backup", "node-a")
+	l, err := e.srv.Snapshots("backup", "node-a", "data")
 	if err != nil || len(l) != 1 || l[0].Name != "s2" || l[0].Bytes != int64(len("root s2")+32) {
 		t.Fatalf("Snapshots = %+v, %v", l, err)
 	}
-	if err := e.srv.DeleteSnapshot("backup", "node-a", "s2"); err != nil {
+	if err := e.srv.DeleteSnapshot("backup", "node-a", "data", "s2"); err != nil {
 		t.Fatal(err)
 	}
-	if l, err := e.srv.Snapshots("backup", "node-a"); err != nil || len(l) != 0 {
+	if l, err := e.srv.Snapshots("backup", "node-a", "data"); err != nil || len(l) != 0 {
 		t.Fatalf("Snapshots after delete = %v, %v", l, err)
 	}
 
@@ -84,8 +84,8 @@ func TestRunRetention(t *testing.T) {
 	}
 	for _, err := range []error{
 		func() error { _, err := e.srv.RunRetention("nope", true); return err }(),
-		e.srv.DeleteSnapshot("nope", "node-a", "s1"),
-		func() error { _, err := e.srv.Snapshots("nope", "node-a"); return err }(),
+		e.srv.DeleteSnapshot("nope", "node-a", "data", "s1"),
+		func() error { _, err := e.srv.Snapshots("nope", "node-a", "data"); return err }(),
 	} {
 		if !errors.Is(err, ErrUnknownBucket) {
 			t.Fatalf("unknown bucket: %v", err)

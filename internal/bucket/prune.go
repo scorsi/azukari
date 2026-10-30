@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -46,7 +47,7 @@ func (o stored) olderThan(now time.Time, d time.Duration) bool {
 
 // Prune runs retention over every namespace of the bucket (ADR 0007, "A run"), each under its
 // lock: complete snapshots whose root was received more than keep before now, except the
-// namespace's newest complete one, then refs without a root older than grace, then chunks no
+// newest complete one of each export of the namespace (ADR 0030), then refs without a root older than grace, then chunks no
 // remaining refs names and older than grace. A dry run deletes nothing and counts the same.
 // On error the counts hold what was deleted before it.
 func (b *Bucket) Prune(now time.Time, keep, grace time.Duration, dryRun bool) (Pruned, error) {
@@ -86,16 +87,20 @@ func (b *Bucket) pruneNamespace(ns string, now time.Time, keep, grace time.Durat
 		return err
 	}
 
-	newest := ""
+	// Names are "<export>/<name>" (ADR 0030): the newest complete one of each export is kept.
+	newest := map[string]string{} // by export
 	for name, r := range roots {
-		if _, ok := refs[name]; ok && (newest == "" ||
-			cmp.Or(cmp.Compare(r.received, roots[newest].received), strings.Compare(name, newest)) > 0) {
-			newest = name
+		if _, ok := refs[name]; !ok {
+			continue
+		}
+		exp := path.Dir(name)
+		if n, ok := newest[exp]; !ok || cmp.Or(cmp.Compare(r.received, roots[n].received), strings.Compare(name, n)) > 0 {
+			newest[exp] = name
 		}
 	}
 	var oldRoots, oldRefs []string
 	for name, r := range roots {
-		if _, ok := refs[name]; ok && name != newest && r.olderThan(now, keep) {
+		if _, ok := refs[name]; ok && name != newest[path.Dir(name)] && r.olderThan(now, keep) {
 			oldRoots = append(oldRoots, name)
 			oldRefs = append(oldRefs, name)
 		}
@@ -244,16 +249,20 @@ func (b *Bucket) removeFile(p string) error {
 	return nil
 }
 
-// DeleteSnapshot deletes namespace's snapshot name for the operator (ADR 0007): its root,
-// durably, then its refs list, under the namespace's lock. Its chunks go at the next run.
-// An absent root is ErrNotFound.
-func (b *Bucket) DeleteSnapshot(namespace, name string) error {
+// DeleteSnapshot deletes namespace's snapshot name of export for the operator (ADR 0007, 0030):
+// its root, durably, then its refs list, under the namespace's lock. Its chunks go at the next
+// run. An absent root is ErrNotFound.
+func (b *Bucket) DeleteSnapshot(namespace, export, name string) error {
 	if err := b.check(); err != nil {
 		return err
 	}
-	if err := checkNamespace(namespace); err != nil {
+	if err := checkSegment("namespace", namespace); err != nil {
 		return err
 	}
+	if err := checkSegment("export", export); err != nil {
+		return err
+	}
+	name = export + "/" + name
 	if err := key.Check(namespace + "/snapshots/" + name); err != nil {
 		return err
 	}
@@ -276,22 +285,26 @@ func (b *Bucket) DeleteSnapshot(namespace, name string) error {
 	return nil
 }
 
-// Snapshots lists namespace's snapshot roots, oldest first, for the operator (ADR 0007).
-func (b *Bucket) Snapshots(namespace string) ([]Snapshot, error) {
+// Snapshots lists the snapshot roots of namespace's export, oldest first, for the operator
+// (ADR 0007, 0030); names are relative to the export.
+func (b *Bucket) Snapshots(namespace, export string) ([]Snapshot, error) {
 	if err := b.check(); err != nil {
 		return nil, err
 	}
-	if err := checkNamespace(namespace); err != nil {
+	if err := checkSegment("namespace", namespace); err != nil {
+		return nil, err
+	}
+	if err := checkSegment("export", export); err != nil {
 		return nil, err
 	}
 	// Under the lock: no prune or deletion between the two scans.
 	defer b.LockNamespace(namespace)()
 	base := filepath.Join(b.path, "objects", namespace)
-	roots, err := scan(filepath.Join(base, "snapshots"), nil)
+	roots, err := scan(filepath.Join(base, "snapshots", export), nil)
 	if err != nil {
 		return nil, err
 	}
-	refs, err := scan(filepath.Join(base, "refs"), func(rel string) bool { _, ok := roots[rel]; return !ok })
+	refs, err := scan(filepath.Join(base, "refs", export), func(rel string) bool { _, ok := roots[rel]; return !ok })
 	if err != nil {
 		return nil, err
 	}
@@ -306,9 +319,12 @@ func (b *Bucket) Snapshots(namespace string) ([]Snapshot, error) {
 }
 
 // checkNamespace refuses anything but one key segment.
-func checkNamespace(ns string) error {
-	if err := key.Check(ns); err != nil || strings.Contains(ns, "/") {
-		return fmt.Errorf("%w: namespace %q", key.ErrInvalid, ns)
+func checkNamespace(ns string) error { return checkSegment("namespace", ns) }
+
+// checkSegment refuses anything but one key segment (ADR 0015) as what's value.
+func checkSegment(what, s string) error {
+	if err := key.Check(s); err != nil || strings.Contains(s, "/") {
+		return fmt.Errorf("%w: %s %q", key.ErrInvalid, what, s)
 	}
 	return nil
 }

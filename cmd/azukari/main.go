@@ -28,8 +28,9 @@ const usage = `usage: azukari [--socket <path>] <command> [arguments]
 
 commands:
   retention <bucket> [--dry-run]                 run the bucket's retention now, wait for its end
-  snapshots <bucket> <namespace>                 list a namespace's snapshots, oldest first
-  delete-snapshot <bucket> <namespace> <name>    delete one snapshot; its chunks go at the next run
+  snapshots <bucket> <namespace> <export>        list the snapshots of a node's export, oldest first
+  delete-snapshot <bucket> <namespace> <export> <name>
+                                                 delete one snapshot; its chunks go at the next run
   backup snapshots [--from-dir <bucket copy>] <config.toml> <export>
                                                  list this node's snapshots of export
   backup restore [--verify] [--from-dir <bucket copy>] <config.toml> <export> <snapshot> <target>
@@ -70,10 +71,10 @@ func run(argv []string, stdout, stderr io.Writer) int {
 	case badFlag:
 	case len(args) == 2 && args[0] == "retention":
 		req, resp = &adminv1.RetentionRequest{DryRun: dryRun}, &adminv1.RetentionResponse{}
-	case len(args) == 3 && args[0] == "snapshots" && !dryRun:
-		req, resp = &adminv1.SnapshotsRequest{Namespace: args[2]}, &adminv1.SnapshotsResponse{}
-	case len(args) == 4 && args[0] == "delete-snapshot" && !dryRun:
-		req, resp = &adminv1.DeleteSnapshotRequest{Namespace: args[2], Name: args[3]}, &adminv1.DeleteSnapshotResponse{}
+	case len(args) == 4 && args[0] == "snapshots" && !dryRun:
+		req, resp = &adminv1.SnapshotsRequest{Namespace: args[2], Export: args[3]}, &adminv1.SnapshotsResponse{}
+	case len(args) == 5 && args[0] == "delete-snapshot" && !dryRun:
+		req, resp = &adminv1.DeleteSnapshotRequest{Namespace: args[2], Export: args[3], Name: args[4]}, &adminv1.DeleteSnapshotResponse{}
 	}
 	if req == nil {
 		fmt.Fprint(stderr, usage)
@@ -97,7 +98,7 @@ func run(argv []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "%s %s %d\n", s.Name, time.Unix(0, s.ReceiveTime).UTC().Format(time.RFC3339Nano), s.Size)
 		}
 	default:
-		fmt.Fprintf(stdout, "deleted %s %s\n", args[2], args[3])
+		fmt.Fprintf(stdout, "deleted %s %s %s\n", args[2], args[3], args[4])
 	}
 	return 0
 }

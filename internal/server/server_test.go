@@ -73,7 +73,7 @@ type env struct {
 	ca        *testca.CA
 	addr      string
 	logs      *syncBuffer
-	snapshots *syncBuffer // one "<bucket> <namespace>" line per OnSnapshot call
+	snapshots *syncBuffer // one "<bucket> <namespace> <export>" line per OnSnapshot call
 	srv       *Server
 	cfg       *config.Server
 	tls       config.TLS
@@ -108,9 +108,9 @@ func start(t *testing.T) *env {
 	}
 	snapshots := &syncBuffer{}
 	record := s.OnSnapshot
-	s.OnSnapshot = func(bucket, namespace string, at time.Time) {
-		fmt.Fprintln(snapshots, bucket, namespace)
-		record(bucket, namespace, at)
+	s.OnSnapshot = func(bucket, namespace, export string, at time.Time) {
+		fmt.Fprintln(snapshots, bucket, namespace, export)
+		record(bucket, namespace, export, at)
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -725,10 +725,10 @@ func TestRefsAndSnapshot(t *testing.T) {
 			got = append(got, l)
 		}
 	}
-	if len(got) != 1 || got[0]["bucket"] != "backup" || got[0]["namespace"] != "node-a" || got[0]["snapshot"] != "data/s" || got[0]["level"] != "info" {
+	if len(got) != 1 || got[0]["bucket"] != "backup" || got[0]["namespace"] != "node-a" || got[0]["export"] != "data" || got[0]["snapshot"] != "s" || got[0]["level"] != "info" {
 		t.Fatalf("snapshot-received lines %v", got)
 	}
-	if s := e.snapshots.String(); s != "backup node-a\n" {
+	if s := e.snapshots.String(); s != "backup node-a data\n" {
 		t.Fatalf("OnSnapshot calls %q", s)
 	}
 }

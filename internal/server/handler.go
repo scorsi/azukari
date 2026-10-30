@@ -178,12 +178,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, o *outcome) {
 		o.code = http.StatusCreated
 		writeHeader(w, o)
 		ns := key.Namespace(k)
-		// A root is <ns>/snapshots/<export>/<name> (ADR 0030); snap is "<export>/<name>".
-		// shortcut: no export field nor label yet, X2 (M6) adds them with per-export freshness.
+		// A root is <ns>/snapshots/<export>/<name> (ADR 0030).
 		if snap, ok := strings.CutPrefix(k, ns+"/snapshots/"); ok && strings.Count(snap, "/") == 1 {
-			s.log.Info("", "event", "snapshot-received", "bucket", name, "namespace", ns, "snapshot", snap)
+			exp, snap, _ := strings.Cut(snap, "/")
+			s.log.Info("", "event", "snapshot-received", "bucket", name, "namespace", ns, "export", exp, "snapshot", snap)
 			if s.OnSnapshot != nil {
-				s.OnSnapshot(name, ns, time.Now()) // the header's receive time, within the request's duration
+				s.OnSnapshot(name, ns, exp, time.Now()) // the header's receive time, within the request's duration
 			}
 		}
 	default:

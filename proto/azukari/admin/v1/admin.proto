@@ -28,6 +28,8 @@ message RetentionResponse {
 // POST /v1/admin/b/<bucket>/snapshots
 message SnapshotsRequest {
   string namespace = 1;
+  // ADR 0030: snapshots are listed per export.
+  string export = 2;
 }
 
 message SnapshotsResponse {
@@ -36,6 +38,7 @@ message SnapshotsResponse {
 }
 
 message Snapshot {
+  // Within the export.
   string name = 1;
   // The store's receive time of the root, ns since the Unix epoch: the snapshot's age (ADR 0007).
   int64 receive_time = 2;
@@ -46,7 +49,9 @@ message Snapshot {
 // POST /v1/admin/b/<bucket>/delete-snapshot
 message DeleteSnapshotRequest {
   string namespace = 1;
+  // Within the export.
   string name = 2;
+  string export = 3;
 }
 
 message DeleteSnapshotResponse {}

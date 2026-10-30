@@ -99,10 +99,10 @@ func (s *Server) prune(sb *served, dry bool) (bucket.Pruned, error) {
 	return sb.b.Prune(s.now(), keep, grace, dry)
 }
 
-// DeleteSnapshot deletes one snapshot for the operator (ADR 0007): root, then refs; its
+// DeleteSnapshot deletes one snapshot of an export for the operator (ADR 0007, 0030): root, then refs; its
 // chunks go at the next run. It waits for the bucket's replication runs to end, as retention
 // does (ADR 0008).
-func (s *Server) DeleteSnapshot(name, namespace, snapshot string) error {
+func (s *Server) DeleteSnapshot(name, namespace, export, snapshot string) error {
 	b, err := s.bucket(name)
 	if err != nil {
 		return err
@@ -110,21 +110,21 @@ func (s *Server) DeleteSnapshot(name, namespace, snapshot string) error {
 	sb := s.buckets[name]
 	sb.run.Lock()
 	defer sb.run.Unlock()
-	err = b.DeleteSnapshot(namespace, snapshot)
+	err = b.DeleteSnapshot(namespace, export, snapshot)
 	if errors.Is(err, bucket.ErrBecameUnavailable) {
 		s.log.Error("", "event", "bucket-unavailable", "bucket", name, "err", err.Error())
 	}
 	return err
 }
 
-// Snapshots lists a namespace's snapshots for the operator, oldest first, with their receive
-// times and the bytes of their root and refs.
-func (s *Server) Snapshots(name, namespace string) ([]bucket.Snapshot, error) {
+// Snapshots lists the snapshots of a namespace's export for the operator, oldest first, with
+// their receive times and the bytes of their root and refs.
+func (s *Server) Snapshots(name, namespace, export string) ([]bucket.Snapshot, error) {
 	b, err := s.bucket(name)
 	if err != nil {
 		return nil, err
 	}
-	return b.Snapshots(namespace)
+	return b.Snapshots(namespace, export)
 }
 
 func (s *Server) bucket(name string) (*bucket.Bucket, error) {

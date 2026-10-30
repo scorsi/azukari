@@ -143,8 +143,8 @@ func (s *Server) serveAdmin(w http.ResponseWriter, r *http.Request, o *outcome, 
 			refuse(w, r, o, http.StatusBadRequest, "request-invalid", err)
 			return
 		}
-		*args = append(*args, "namespace", req.Namespace)
-		list, err := s.Snapshots(name, req.Namespace)
+		*args = append(*args, "namespace", req.Namespace, "export", req.Export)
+		list, err := s.Snapshots(name, req.Namespace, req.Export)
 		if err != nil {
 			refuseAdmin(w, r, o, err)
 			return
@@ -160,8 +160,8 @@ func (s *Server) serveAdmin(w http.ResponseWriter, r *http.Request, o *outcome, 
 			refuse(w, r, o, http.StatusBadRequest, "request-invalid", err)
 			return
 		}
-		*args = append(*args, "namespace", req.Namespace, "snapshot", req.Name)
-		if err := s.DeleteSnapshot(name, req.Namespace, req.Name); err != nil {
+		*args = append(*args, "namespace", req.Namespace, "export", req.Export, "snapshot", req.Name)
+		if err := s.DeleteSnapshot(name, req.Namespace, req.Export, req.Name); err != nil {
 			refuseAdmin(w, r, o, err)
 			return
 		}

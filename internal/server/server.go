@@ -46,7 +46,7 @@ type Server struct {
 	granted map[string]bool // IDs in some bucket's nodes: any other ID gets 403 on every request
 	// OnSnapshot is called, from concurrent requests, after each new snapshot root is stored.
 	// New sets it to the azukari_last_snapshot_timestamp_seconds update (ADR 0009).
-	OnSnapshot func(bucket, namespace string, at time.Time)
+	OnSnapshot func(bucket, namespace, export string, at time.Time)
 	m          metrics
 	// The retention and replication clock (ADR 0007, 0008); tests replace it.
 	now   func() time.Time

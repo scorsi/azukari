@@ -6,12 +6,15 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/scorsi/azukari/internal/key"
 )
 
 const (
@@ -45,14 +48,15 @@ func refsBody(chunks ...string) string {
 	return string(bytes.Join(ids, nil))
 }
 
-// backup stores a complete snapshot of chunks at at: chunks, refs, root.
+// backup stores a complete snapshot "<export>/<name>" of chunks at at: chunks, refs, root
+// (body "root <name>").
 func backup(t *testing.T, b *Bucket, at time.Time, ns, name string, chunks ...string) {
 	t.Helper()
 	for _, c := range chunks {
 		must(t, putAt(t, b, at, nsChunk(ns, c), c))
 	}
 	must(t, putAt(t, b, at, ns+"/refs/"+name, refsBody(chunks...)))
-	must(t, putAt(t, b, at, ns+"/snapshots/"+name, "root "+name))
+	must(t, putAt(t, b, at, ns+"/snapshots/"+name, "root "+path.Base(name)))
 }
 
 func objects(t *testing.T, b *Bucket) []string {
@@ -84,20 +88,20 @@ func prune(t *testing.T, b *Bucket, now time.Time, dry bool) Pruned {
 	return p
 }
 
-// setupHistory: snapshots s1..s4 of namespace a, s1 and s2 older than keep, s3 within it,
+// setupHistory: snapshots s1..s4 of namespace a's export d, s1 and s2 older than keep, s3 within it,
 // s4 the newest; c3 is first stored by s2 (old) but referenced by s3 and s4.
 func setupHistory(t *testing.T) (*Bucket, time.Time) {
 	b := newBucket(t)
 	t0 := testNow
 	must(t, putAt(t, b, t0, "a/config", "{}"))
-	backup(t, b, t0, "a", "s1", "c1", "c2")
-	backup(t, b, t0.Add(5*day), "a", "s2", "c2", "c3")
-	backup(t, b, t0.Add(18*day), "a", "s3", "c3")
-	backup(t, b, t0.Add(24*day), "a", "s4", "c3", "c4")
+	backup(t, b, t0, "a", "d/s1", "c1", "c2")
+	backup(t, b, t0.Add(5*day), "a", "d/s2", "c2", "c3")
+	backup(t, b, t0.Add(18*day), "a", "d/s3", "c3")
+	backup(t, b, t0.Add(24*day), "a", "d/s4", "c3", "c4")
 	return b, t0.Add(25 * day)
 }
 
-var historyKept = []string{"a/config", "a/refs/s3", "a/refs/s4", "a/snapshots/s3", "a/snapshots/s4"}
+var historyKept = []string{"a/config", "a/refs/d/s3", "a/refs/d/s4", "a/snapshots/d/s3", "a/snapshots/d/s4"}
 
 func TestPruneOldSnapshots(t *testing.T) {
 	b, now := setupHistory(t)
@@ -124,7 +128,7 @@ func TestPruneOldSnapshots(t *testing.T) {
 	}
 	assertObjects(t, b, append(historyKept, nsChunk("a", "c3"), nsChunk("a", "c4"))...)
 	// Roots durably gone before refs, refs before chunks.
-	if len(synced) != 4 || synced[0] != "a/snapshots" || synced[1] != "a/refs" ||
+	if len(synced) != 4 || synced[0] != "a/snapshots/d" || synced[1] != "a/refs/d" ||
 		!strings.HasPrefix(synced[2], "a/chunks/") || !strings.HasPrefix(synced[3], "a/chunks/") {
 		t.Fatalf("synced %v", synced)
 	}
@@ -137,18 +141,18 @@ func TestPruneOldSnapshots(t *testing.T) {
 func TestPruneKeepsNewestOfStoppedNode(t *testing.T) {
 	b := newBucket(t)
 	t0 := testNow
-	backup(t, b, t0, "a", "s1", "c1")
-	backup(t, b, t0.Add(day), "a", "s2", "c2")
+	backup(t, b, t0, "a", "d/s1", "c1")
+	backup(t, b, t0.Add(day), "a", "d/s2", "c2")
 	// The root without refs is not a complete snapshot: neither newest nor pruned. Put refuses
 	// one since ADR 0025: a store written before it may still hold one.
-	must(t, putAt(t, b, t0.Add(2*day), "a/refs/s3", ""))
-	must(t, putAt(t, b, t0.Add(2*day), "a/snapshots/s3", "half"))
-	must(t, os.Remove(filepath.Join(b.path, "objects", "a", "refs", "s3")))
+	must(t, putAt(t, b, t0.Add(2*day), "a/refs/d/s3", ""))
+	must(t, putAt(t, b, t0.Add(2*day), "a/snapshots/d/s3", "half"))
+	must(t, os.Remove(filepath.Join(b.path, "objects", "a", "refs", "d", "s3")))
 	p := prune(t, b, t0.Add(100*day), false)
 	if p.Snapshots != 1 || p.Refs != 1 || p.Chunks != 1 {
 		t.Fatalf("Prune = %+v", p)
 	}
-	assertObjects(t, b, "a/refs/s2", "a/snapshots/s2", "a/snapshots/s3", nsChunk("a", "c2"))
+	assertObjects(t, b, "a/refs/d/s2", "a/snapshots/d/s2", "a/snapshots/d/s3", nsChunk("a", "c2"))
 }
 
 func TestPruneOrphansAfterGrace(t *testing.T) {
@@ -156,7 +160,7 @@ func TestPruneOrphansAfterGrace(t *testing.T) {
 	t0 := testNow
 	// An interrupted run: chunks and refs, no root; and a chunk nothing names.
 	must(t, putAt(t, b, t0, nsChunk("a", "c1"), "c1"))
-	must(t, putAt(t, b, t0, "a/refs/s1", refsBody("c1")))
+	must(t, putAt(t, b, t0, "a/refs/d/s1", refsBody("c1")))
 	must(t, putAt(t, b, t0, nsChunk("a", "lost"), "lost"))
 	all := objects(t, b)
 	if p := prune(t, b, t0.Add(grace), false); p != (Pruned{}) {
@@ -186,31 +190,73 @@ func TestPruneDuringBackup(t *testing.T) {
 	if p := prune(t, b, now, false); p.Chunks != 1 {
 		t.Fatalf("Prune = %+v", p)
 	}
-	if err := putAt(t, b, now, "a/refs/s1", refsBody("old", "new", "mid")); !errors.Is(err, ErrRefsIncomplete) {
+	if err := putAt(t, b, now, "a/refs/d/s1", refsBody("old", "new", "mid")); !errors.Is(err, ErrRefsIncomplete) {
 		t.Fatalf("refs Put = %v", err)
 	}
 	must(t, putAt(t, b, now, nsChunk("a", "old"), "old"))
-	must(t, putAt(t, b, now, "a/refs/s1", refsBody("old", "new", "mid")))
+	must(t, putAt(t, b, now, "a/refs/d/s1", refsBody("old", "new", "mid")))
 	// refs stored, root not yet: "mid" is now older than grace but named by refs.
 	if p := prune(t, b, now.Add(2*time.Hour), false); p != (Pruned{}) {
 		t.Fatalf("Prune = %+v", p)
 	}
-	must(t, putAt(t, b, now.Add(2*time.Hour), "a/snapshots/s1", "root"))
+	must(t, putAt(t, b, now.Add(2*time.Hour), "a/snapshots/d/s1", "root"))
 	prune(t, b, now.Add(keep+day), false)
-	assertObjects(t, b, "a/refs/s1", "a/snapshots/s1", nsChunk("a", "mid"), nsChunk("a", "new"), nsChunk("a", "old"))
+	assertObjects(t, b, "a/refs/d/s1", "a/snapshots/d/s1", nsChunk("a", "mid"), nsChunk("a", "new"), nsChunk("a", "old"))
 }
 
 // A root is accepted only with its refs (ADR 0025); a retry of a stored root still answers 200.
 func TestRootRequiresRefs(t *testing.T) {
 	b := newBucket(t)
-	if err := putAt(t, b, testNow, "a/snapshots/s1", "root"); !errors.Is(err, ErrRefsIncomplete) {
+	if err := putAt(t, b, testNow, "a/snapshots/d/s1", "root"); !errors.Is(err, ErrRefsIncomplete) {
 		t.Fatalf("root without refs: %v", err)
 	}
 	assertClean(t, b)
-	backup(t, b, testNow, "a", "s1", "c1")
-	if created, err := put(b, "a/snapshots/s1", "root s1"); created || err != nil {
+	// The refs of the same name in another export, or flat, are not this root's (ADR 0030).
+	must(t, putAt(t, b, testNow, "a/refs/e/s1", ""))
+	must(t, putAt(t, b, testNow, "a/refs/s1", ""))
+	if err := putAt(t, b, testNow, "a/snapshots/d/s1", "root"); !errors.Is(err, ErrRefsIncomplete) {
+		t.Fatalf("root with another export's refs: %v", err)
+	}
+	backup(t, b, testNow, "a", "d/s1", "c1")
+	if created, err := put(b, "a/snapshots/d/s1", "root s1"); created || err != nil {
 		t.Fatalf("retry = %v, %v", created, err)
 	}
+}
+
+// Retention per export (ADR 0030): the old snapshots of each export go, the newest complete
+// one of each stays however old, a refs without root is an orphan of its export path, and a
+// chunk two exports share stays while either still names it.
+func TestPrunePerExport(t *testing.T) {
+	b := newBucket(t)
+	t0 := testNow
+	backup(t, b, t0, "a", "d/s1", "c1", "shared")
+	backup(t, b, t0.Add(day), "a", "d/s2", "c2", "shared")
+	backup(t, b, t0.Add(2*day), "a", "e/s1", "e1", "shared")
+	backup(t, b, t0.Add(3*day), "a", "e/s2", "e2")
+	backup(t, b, t0.Add(20*day), "a", "e/s3", "e3")
+	must(t, putAt(t, b, t0, "a/refs/e/s9", "")) // an interrupted run of e
+	now := t0.Add(30 * day)
+
+	// d/s2 (newest of d) keeps "shared"; e keeps only e/s3.
+	if p := prune(t, b, now, false); p.Snapshots != 3 || p.Refs != 4 || p.Chunks != 3 {
+		t.Fatalf("Prune = %+v", p)
+	}
+	assertObjects(t, b, "a/refs/d/s2", "a/snapshots/d/s2", "a/refs/e/s3", "a/snapshots/e/s3",
+		nsChunk("a", "c2"), nsChunk("a", "shared"), nsChunk("a", "e3"))
+
+	// A newer d without "shared": the chunk stays only while an e snapshot names it.
+	backup(t, b, now, "a", "e/s4", "shared")
+	backup(t, b, now, "a", "d/s3", "c3")
+	if p := prune(t, b, now.Add(keep+day), false); p.Snapshots != 2 || p.Chunks != 2 {
+		t.Fatalf("Prune = %+v", p)
+	}
+	assertObjects(t, b, "a/refs/d/s3", "a/snapshots/d/s3", "a/refs/e/s4", "a/snapshots/e/s4",
+		nsChunk("a", "c3"), nsChunk("a", "shared"))
+	must(t, b.DeleteSnapshot("a", "e", "s4"))
+	if p := prune(t, b, now.Add(keep+day), false); p.Chunks != 1 {
+		t.Fatalf("Prune = %+v", p)
+	}
+	assertObjects(t, b, "a/refs/d/s3", "a/snapshots/d/s3", nsChunk("a", "c3"))
 }
 
 // The M3 review's run paused past grace after its refs: pruning removes the orphan refs and
@@ -218,11 +264,11 @@ func TestRootRequiresRefs(t *testing.T) {
 func TestRootAfterOrphanPruned(t *testing.T) {
 	b := newBucket(t)
 	must(t, putAt(t, b, testNow, nsChunk("a", "c1"), "c1"))
-	must(t, putAt(t, b, testNow, "a/refs/s1", refsBody("c1")))
+	must(t, putAt(t, b, testNow, "a/refs/d/s1", refsBody("c1")))
 	if p := prune(t, b, testNow.Add(grace+time.Nanosecond), false); p.Refs != 1 || p.Chunks != 1 {
 		t.Fatalf("Prune = %+v", p)
 	}
-	if err := putAt(t, b, testNow.Add(grace+time.Hour), "a/snapshots/s1", "root"); !errors.Is(err, ErrRefsIncomplete) {
+	if err := putAt(t, b, testNow.Add(grace+time.Hour), "a/snapshots/d/s1", "root"); !errors.Is(err, ErrRefsIncomplete) {
 		t.Fatalf("late root: %v", err)
 	}
 	assertObjects(t, b)
@@ -241,7 +287,7 @@ func TestPruneUnavailable(t *testing.T) {
 
 func TestSnapshotsAndDelete(t *testing.T) {
 	b, _ := setupHistory(t)
-	list, err := b.Snapshots("a")
+	list, err := b.Snapshots("a", "d")
 	must(t, err)
 	var names []string
 	for _, s := range list {
@@ -251,26 +297,35 @@ func TestSnapshotsAndDelete(t *testing.T) {
 		list[0].Bytes != int64(len("root s1")+2*32) {
 		t.Fatalf("Snapshots = %+v", list)
 	}
-	if list, err := b.Snapshots("nobody"); err != nil || len(list) != 0 {
-		t.Fatalf("Snapshots(nobody) = %v, %v", list, err)
+	for _, ns := range [][2]string{{"nobody", "d"}, {"a", "e"}} {
+		if list, err := b.Snapshots(ns[0], ns[1]); err != nil || len(list) != 0 {
+			t.Fatalf("Snapshots(%v) = %v, %v", ns, list, err)
+		}
 	}
-	if _, err := b.Snapshots("a/b"); err == nil {
-		t.Fatal("Snapshots(a/b) accepted")
+	for _, bad := range [][2]string{{"a/b", "d"}, {"a", "d/s1"}, {"a", ".."}, {"a", ""}} {
+		if _, err := b.Snapshots(bad[0], bad[1]); !errors.Is(err, key.ErrInvalid) {
+			t.Fatalf("Snapshots(%v) = %v", bad, err)
+		}
 	}
 
-	must(t, b.DeleteSnapshot("a", "s4"))
-	if err := b.DeleteSnapshot("a", "s4"); !errors.Is(err, ErrNotFound) {
+	if err := b.DeleteSnapshot("a", "e", "s4"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("DeleteSnapshot of another export = %v", err)
+	}
+	must(t, b.DeleteSnapshot("a", "d", "s4"))
+	if err := b.DeleteSnapshot("a", "d", "s4"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("second DeleteSnapshot = %v", err)
 	}
-	if err := b.DeleteSnapshot("a", "../x"); err == nil {
-		t.Fatal("DeleteSnapshot(../x) accepted")
+	for _, bad := range [][2]string{{"d", "../x"}, {"..", "s3"}, {"d/s3", "x"}} {
+		if err := b.DeleteSnapshot("a", bad[0], bad[1]); !errors.Is(err, key.ErrInvalid) {
+			t.Fatalf("DeleteSnapshot(%v) = %v", bad, err)
+		}
 	}
 	// Its chunks go at the next run: s3 is now the newest and keeps c3; c4 is unreferenced.
 	p := prune(t, b, testNow.Add(27*day), false)
 	if p.Snapshots != 2 || p.Chunks != 3 {
 		t.Fatalf("Prune = %+v", p)
 	}
-	assertObjects(t, b, "a/config", "a/refs/s3", "a/snapshots/s3", nsChunk("a", "c3"))
+	assertObjects(t, b, "a/config", "a/refs/d/s3", "a/snapshots/d/s3", nsChunk("a", "c3"))
 }
 
 // A prune waiting for a namespace's lock while another call fails the bucket (a deletion whose
@@ -278,8 +333,8 @@ func TestSnapshotsAndDelete(t *testing.T) {
 func TestPruneUnavailableWhileWaiting(t *testing.T) {
 	b := newBucket(t)
 	must(t, putAt(t, b, testNow, nsChunk("a", "x"), "x")) // a: one orphan chunk, deleted last
-	backup(t, b, testNow, "b", "s1", "c1")
-	backup(t, b, testNow.Add(day), "b", "s2", "c2")
+	backup(t, b, testNow, "b", "d/s1", "c1")
+	backup(t, b, testNow.Add(day), "b", "d/s2", "c2")
 	want := slices.DeleteFunc(objects(t, b), func(o string) bool { return o == nsChunk("a", "x") })
 
 	unlock := b.LockNamespace("b")
@@ -319,7 +374,7 @@ func TestPruneCorruptRefs(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			b, now := setupHistory(t)
-			p := b.objectPath("a/refs/s4") // c3 and c4: retained
+			p := b.objectPath("a/refs/d/s4") // c3 and c4: retained
 			f, err := os.ReadFile(p)
 			must(t, err)
 			tc.edit(f)
@@ -345,15 +400,15 @@ func TestSnapshotsDuringDelete(t *testing.T) {
 	unlock := b.LockNamespace("a") // a deletion of s4 in progress
 	res := make(chan []Snapshot)
 	go func() {
-		list, err := b.Snapshots("a")
+		list, err := b.Snapshots("a", "d")
 		if err != nil {
 			t.Error(err)
 		}
 		res <- list
 	}()
 	time.Sleep(50 * time.Millisecond)
-	must(t, os.Remove(b.objectPath("a/snapshots/s4")))
-	must(t, os.Remove(b.objectPath("a/refs/s4")))
+	must(t, os.Remove(b.objectPath("a/snapshots/d/s4")))
+	must(t, os.Remove(b.objectPath("a/refs/d/s4")))
 	select {
 	case <-res:
 		t.Fatal("listed while the namespace was locked")

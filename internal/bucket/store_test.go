@@ -391,36 +391,30 @@ func TestList(t *testing.T) {
 	}
 }
 
-func TestLastSnapshot(t *testing.T) {
+// The newest root of each export (ADR 0030), whatever the order of names; roots of another
+// namespace or at another depth do not count.
+func TestLastSnapshots(t *testing.T) {
 	b := newBucket(t)
-	if _, ok, err := b.LastSnapshot("n"); ok || err != nil {
-		t.Fatalf("empty: %v, %v", ok, err)
+	if last, err := b.LastSnapshots("n"); len(last) != 0 || err != nil {
+		t.Fatalf("empty: %v, %v", last, err)
 	}
-	for _, k := range []string{"n/refs/s1", "n/refs/s2", "n/refs/s0", "m/refs/s9"} {
-		must(t, putAt(t, b, testNow.Add(48*time.Hour), k, "")) // a root needs its refs (ADR 0025)
+	h := time.Hour
+	for _, r := range []struct {
+		k  string
+		at time.Duration
+	}{
+		{"n/snapshots/d/s1", 0}, {"n/snapshots/d/s2", h}, {"n/snapshots/d/s0", -h},
+		{"n/snapshots/e/s1", 3 * h}, {"n/snapshots/flat", 9 * h}, {"n/snapshots/e/x/deep", 9 * h},
+		{"m/snapshots/d/s9", 9 * h},
+	} {
+		must(t, putAt(t, b, testNow, strings.Replace(r.k, "/snapshots/", "/refs/", 1), "")) // ADR 0025
+		must(t, putAt(t, b, testNow.Add(r.at), r.k, r.k))
 	}
-	for i, k := range []string{"n/snapshots/s1", "n/snapshots/s2", "n/snapshots/s0", "n/refs/s9", "m/snapshots/s9"} {
-		at := testNow.Add(time.Duration(i) * time.Hour)
-		if k == "n/snapshots/s0" {
-			at = testNow.Add(-time.Hour)
-		}
-		if k[0] == 'm' || k == "n/refs/s9" {
-			at = testNow.Add(24 * time.Hour)
-		}
-		b.now = func() time.Time { return at }
-		body := k
-		if k == "n/refs/s9" {
-			body = "" // a refs body is a list of chunk ids; the empty list is valid
-		}
-		if _, err := put(b, k, body); err != nil {
-			t.Fatal(err)
-		}
+	last, err := b.LastSnapshots("n")
+	if err != nil || len(last) != 2 || !last["d"].Equal(testNow.Add(h)) || !last["e"].Equal(testNow.Add(3*h)) {
+		t.Fatalf("LastSnapshots = %v, %v", last, err)
 	}
-	got, ok, err := b.LastSnapshot("n")
-	if err != nil || !ok || !got.Equal(testNow.Add(time.Hour)) {
-		t.Fatalf("LastSnapshot = %v, %v, %v", got, ok, err)
-	}
-	if _, _, err := b.LastSnapshot("n/snapshots"); !errors.Is(err, key.ErrInvalid) {
+	if _, err := b.LastSnapshots("n/snapshots"); !errors.Is(err, key.ErrInvalid) {
 		t.Fatalf("bad namespace: %v", err)
 	}
 }
@@ -453,7 +447,7 @@ func TestRefs(t *testing.T) {
 	if _, err := put(b, chunkKey(lo), "lo"); err != nil {
 		t.Fatal(err)
 	}
-	if created, err := put(b, "n/refs/s", refs); created || !errors.Is(err, ErrRefsIncomplete) {
+	if created, err := put(b, "n/refs/d/s", refs); created || !errors.Is(err, ErrRefsIncomplete) {
 		t.Fatalf("incomplete: %v, %v", created, err)
 	}
 	// Malformed lists are refused as such, before any missing chunk (hi is absent).
@@ -462,7 +456,7 @@ func TestRefs(t *testing.T) {
 		"duplicate": string(lo[:]) + string(lo[:]),
 		"partial":   refs + "x",
 	} {
-		if _, err := put(b, "n/refs/s", body); !errors.Is(err, ErrRefsInvalid) {
+		if _, err := put(b, "n/refs/d/s", body); !errors.Is(err, ErrRefsInvalid) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
@@ -470,14 +464,14 @@ func TestRefs(t *testing.T) {
 	if _, err := put(b, chunkKey(hi), "hi"); err != nil {
 		t.Fatal(err)
 	}
-	if created, err := put(b, "n/refs/s", refs); !created || err != nil {
+	if created, err := put(b, "n/refs/d/s", refs); !created || err != nil {
 		t.Fatalf("complete: %v, %v", created, err)
 	}
 	// Other namespaces' chunks do not count, and other keys are not refs lists.
-	if _, err := put(b, "m/refs/s", refs); !errors.Is(err, ErrRefsIncomplete) {
+	if _, err := put(b, "m/refs/d/s", refs); !errors.Is(err, ErrRefsIncomplete) {
 		t.Fatalf("other namespace: %v", err)
 	}
-	if _, err := put(b, "n/snapshots/s", "x"); err != nil {
+	if _, err := put(b, "n/snapshots/d/s", "x"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -487,8 +481,8 @@ func TestRefsWaitsForLock(t *testing.T) {
 	b := newBucket(t)
 	unlock := b.LockNamespace("n")
 	done := make(chan error)
-	go func() { _, err := put(b, "n/refs/s", ""); done <- err }()
-	if _, err := put(b, "m/refs/s", ""); err != nil { // another namespace is not held
+	go func() { _, err := put(b, "n/refs/d/s", ""); done <- err }()
+	if _, err := put(b, "m/refs/d/s", ""); err != nil { // another namespace is not held
 		t.Fatal(err)
 	}
 	select {

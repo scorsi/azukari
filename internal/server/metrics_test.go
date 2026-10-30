@@ -104,8 +104,6 @@ func TestMetrics(t *testing.T) {
 		`azukari_bucket_available{bucket="backup"} 1`,
 		`azukari_bucket_available{bucket="down"} 0`,
 		`azukari_bucket_available{bucket="full"} 1`,
-		`azukari_last_snapshot_timestamp_seconds{bucket="backup",namespace="node-a"} 0`,
-		`azukari_last_snapshot_timestamp_seconds{bucket="down",namespace="node-a"} 0`,
 		`azukari_tls_handshake_errors_total 0`,
 		fmt.Sprintf("azukari_svid_expiry_timestamp_seconds %d", e.srv.src.NotAfter().Unix()),
 	} {
@@ -115,6 +113,10 @@ func TestMetrics(t *testing.T) {
 	}
 	if strings.Contains(body, `azukari_bucket_free_bytes{bucket="down"}`) || value(t, body, `azukari_bucket_free_bytes{bucket="backup"}`) <= 0 {
 		t.Errorf("free bytes:\n%s", body)
+	}
+	// The store learns a node's exports from their snapshots: no series before one (ADR 0030).
+	if strings.Contains(body, "azukari_last_snapshot_timestamp_seconds{") {
+		t.Errorf("freshness before any snapshot:\n%s", body)
 	}
 	if strings.Contains(body, "azukari_requests_total{") {
 		t.Errorf("requests before any:\n%s", body)
@@ -128,6 +130,15 @@ func TestMetrics(t *testing.T) {
 	before := time.Now().Unix()
 	if a := e.do(t, c, "PUT", "/v1/b/backup/o/node-a/snapshots/data/s", bytes.NewReader(data), hexSum(data)); a.code != http.StatusCreated {
 		t.Fatalf("snapshot: %d %q", a.code, a.reason)
+	}
+	// A second export, and a root at another depth that is no export's snapshot.
+	for _, k := range []string{"other/s", "flat"} {
+		if a := e.do(t, c, "PUT", "/v1/b/backup/o/node-a/refs/"+k, bytes.NewReader(nil), hexSum(nil)); a.code != http.StatusCreated {
+			t.Fatalf("refs %s: %d %q", k, a.code, a.reason)
+		}
+		if a := e.do(t, c, "PUT", "/v1/b/backup/o/node-a/snapshots/"+k, bytes.NewReader(data), hexSum(data)); a.code != http.StatusCreated {
+			t.Fatalf("snapshot %s: %d %q", k, a.code, a.reason)
+		}
 	}
 	after := time.Now().Unix()
 	if a := e.do(t, c, "PUT", "/v1/b/down/o/node-a/chunks/x", bytes.NewReader(data), hexSum(data)); a.code != http.StatusServiceUnavailable {
@@ -153,10 +164,10 @@ func TestMetrics(t *testing.T) {
 
 	body = scrape(t, e.srv)
 	for series, want := range map[string]int64{
-		`azukari_requests_total{bucket="backup",call="put",code="2xx"}`: 2,
+		`azukari_requests_total{bucket="backup",call="put",code="2xx"}`: 6,
 		`azukari_requests_total{bucket="down",call="put",code="5xx"}`:   1,
 		`azukari_requests_total{bucket="",call="get",code="4xx"}`:       1, // the stranger never reaches a bucket
-		`azukari_received_bytes_total{bucket="backup"}`:                 4,
+		`azukari_received_bytes_total{bucket="backup"}`:                 12,
 		`azukari_tls_handshake_errors_total`:                            1,
 	} {
 		if got := value(t, body, series); got != want {
@@ -166,8 +177,13 @@ func TestMetrics(t *testing.T) {
 	if strings.Contains(body, `call=""`) {
 		t.Errorf("unrouted request counted:\n%s", body) // the DELETE
 	}
-	if got := value(t, body, `azukari_last_snapshot_timestamp_seconds{bucket="backup",namespace="node-a"}`); got < before || got > after {
-		t.Errorf("freshness %d, want within [%d, %d]", got, before, after)
+	for _, exp := range []string{"data", "other"} {
+		if got := value(t, body, `azukari_last_snapshot_timestamp_seconds{bucket="backup",namespace="node-a",export="`+exp+`"}`); got < before || got > after {
+			t.Errorf("freshness of %s %d, want within [%d, %d]", exp, got, before, after)
+		}
+	}
+	if n := strings.Count(body, "azukari_last_snapshot_timestamp_seconds{"); n != 2 {
+		t.Errorf("%d freshness series, want 2:\n%s", n, body)
 	}
 
 	// A restart rebuilds freshness from the disk.
@@ -176,11 +192,13 @@ func TestMetrics(t *testing.T) {
 		t.Fatal(err)
 	}
 	body = scrape(t, s2)
-	if got := value(t, body, `azukari_last_snapshot_timestamp_seconds{bucket="backup",namespace="node-a"}`); got < before || got > after {
-		t.Errorf("rebuilt freshness %d, want within [%d, %d]", got, before, after)
+	for _, exp := range []string{"data", "other"} {
+		if got := value(t, body, `azukari_last_snapshot_timestamp_seconds{bucket="backup",namespace="node-a",export="`+exp+`"}`); got < before || got > after {
+			t.Errorf("rebuilt freshness of %s %d, want within [%d, %d]", exp, got, before, after)
+		}
 	}
-	if got := value(t, body, `azukari_last_snapshot_timestamp_seconds{bucket="full",namespace="node-a"}`); got != 0 {
-		t.Errorf("full: %d", got)
+	if n := strings.Count(body, "azukari_last_snapshot_timestamp_seconds{"); n != 2 {
+		t.Errorf("%d rebuilt freshness series, want 2:\n%s", n, body)
 	}
 }
 

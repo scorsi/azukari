@@ -489,40 +489,24 @@ func (b *Bucket) List(prefix, startAfter string, limit int) (objs []Object, next
 	return objs, next, nil
 }
 
-// LastSnapshot is the receive time of namespace's newest root (snapshots/<export>/<name>,
-// ADR 0030), false when it has none: read once at start for
-// azukari_last_snapshot_timestamp_seconds (ADR 0009).
-// shortcut: newest over every export of the namespace; X2 (M6) makes it per export.
-func (b *Bucket) LastSnapshot(namespace string) (time.Time, bool, error) {
+// LastSnapshots is the receive time of the newest root of each export of namespace
+// (snapshots/<export>/<name>, ADR 0030), by export: read once at start for
+// azukari_last_snapshot_timestamp_seconds (ADR 0009). Roots at any other depth are not
+// snapshots of an export and are ignored.
+func (b *Bucket) LastSnapshots(namespace string) (map[string]time.Time, error) {
 	if err := checkNamespace(namespace); err != nil {
-		return time.Time{}, false, err
+		return nil, err
 	}
-	dir := filepath.Join(b.path, "objects", namespace, "snapshots")
-	var newest int64
-	found := false
-	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-		switch {
-		case p == dir && errors.Is(notFound(err), ErrNotFound):
-			return fs.SkipAll
-		case err != nil:
-			return err
-		case !d.Type().IsRegular():
-			return nil
-		}
-		h, err := readHeader(p)
-		if err != nil {
-			return err
-		}
-		if !found || h.ReceiveTime > newest {
-			newest, found = h.ReceiveTime, true
-		}
-		return nil
-	})
+	roots, err := scan(filepath.Join(b.path, "objects", namespace, "snapshots"), nil)
 	if err != nil {
-		return time.Time{}, false, err
+		return nil, err
 	}
-	if !found {
-		return time.Time{}, false, nil
+	last := map[string]time.Time{}
+	for name, r := range roots {
+		exp, _, _ := strings.Cut(name, "/")
+		if at := time.Unix(0, r.received); strings.Count(name, "/") == 1 && at.After(last[exp]) {
+			last[exp] = at
+		}
 	}
-	return time.Unix(0, newest), true, nil
+	return last, nil
 }

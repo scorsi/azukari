@@ -102,13 +102,15 @@ func TestAdminSocket(t *testing.T) {
 		t.Fatalf("socket %v, %v; want a socket, mode 0660", fi.Mode(), err)
 	}
 
-	store(t, e, "node-a/refs/s1", "")
-	store(t, e, "node-a/snapshots/s1", "root s1")
-	store(t, e, "node-a/refs/s2", "")
+	store(t, e, "node-a/refs/data/s1", "")
+	store(t, e, "node-a/snapshots/data/s1", "root s1")
+	store(t, e, "node-a/refs/data/s2", "")
 	time.Sleep(time.Millisecond) // distinct receive times
-	store(t, e, "node-a/snapshots/s2", "root s2")
+	store(t, e, "node-a/snapshots/data/s2", "root s2")
+	store(t, e, "node-a/refs/other/s3", "") // another export of the node (ADR 0030)
+	store(t, e, "node-a/snapshots/other/s3", "root s3")
 	var sr adminv1.SnapshotsResponse
-	if code, reason := adminPost(t, sock, "POST", "/v1/admin/b/backup/snapshots", &adminv1.SnapshotsRequest{Namespace: "node-a"}, &sr); code != 200 {
+	if code, reason := adminPost(t, sock, "POST", "/v1/admin/b/backup/snapshots", &adminv1.SnapshotsRequest{Namespace: "node-a", Export: "data"}, &sr); code != 200 {
 		t.Fatalf("snapshots = %d %s", code, reason)
 	}
 	if len(sr.Snapshots) != 2 || sr.Snapshots[0].Name != "s1" || sr.Snapshots[1].Name != "s2" ||
@@ -116,17 +118,19 @@ func TestAdminSocket(t *testing.T) {
 		time.Since(time.Unix(0, sr.Snapshots[1].ReceiveTime)) > time.Minute {
 		t.Fatalf("snapshots = %v", sr.Snapshots)
 	}
-	// An unknown namespace lists no snapshot (ADR 0024).
-	sr.Reset()
-	if code, _ := adminPost(t, sock, "POST", "/v1/admin/b/backup/snapshots", &adminv1.SnapshotsRequest{Namespace: "node-x"}, &sr); code != 200 || len(sr.Snapshots) != 0 {
-		t.Fatalf("unknown namespace = %d %v", code, sr.Snapshots)
+	// An unknown namespace or export lists no snapshot (ADR 0024).
+	for _, req := range []*adminv1.SnapshotsRequest{{Namespace: "node-x", Export: "data"}, {Namespace: "node-a", Export: "none"}} {
+		sr.Reset()
+		if code, _ := adminPost(t, sock, "POST", "/v1/admin/b/backup/snapshots", req, &sr); code != 200 || len(sr.Snapshots) != 0 {
+			t.Fatalf("unknown %v = %d %v", req, code, sr.Snapshots)
+		}
 	}
 
-	del := &adminv1.DeleteSnapshotRequest{Namespace: "node-a", Name: "s1"}
+	del := &adminv1.DeleteSnapshotRequest{Namespace: "node-a", Export: "data", Name: "s1"}
 	if code, reason := adminPost(t, sock, "POST", "/v1/admin/b/backup/delete-snapshot", del, &adminv1.DeleteSnapshotResponse{}); code != 200 {
 		t.Fatalf("delete = %d %s", code, reason)
 	}
-	if l, err := e.srv.Snapshots("backup", "node-a"); err != nil || len(l) != 1 || l[0].Name != "s2" {
+	if l, err := e.srv.Snapshots("backup", "node-a", "data"); err != nil || len(l) != 1 || l[0].Name != "s2" {
 		t.Fatalf("after delete: %v, %v", l, err)
 	}
 
@@ -142,14 +146,16 @@ func TestAdminSocket(t *testing.T) {
 		reason       string
 	}{
 		{"POST", "/v1/admin/b/backup/delete-snapshot", del, 404, "snapshot-unknown"},
-		{"POST", "/v1/admin/b/nope/snapshots", &adminv1.SnapshotsRequest{Namespace: "node-a"}, 404, "bucket-unknown"},
+		{"POST", "/v1/admin/b/nope/snapshots", &adminv1.SnapshotsRequest{Namespace: "node-a", Export: "data"}, 404, "bucket-unknown"},
 		{"POST", "/v1/admin/b/nope/retention", &adminv1.RetentionRequest{}, 404, "bucket-unknown"},
 		{"POST", "/v1/admin/b/nope/delete-snapshot", del, 404, "bucket-unknown"},
-		{"POST", "/v1/admin/b/down/snapshots", &adminv1.SnapshotsRequest{Namespace: "node-a"}, 503, "bucket-unavailable"},
+		{"POST", "/v1/admin/b/down/snapshots", &adminv1.SnapshotsRequest{Namespace: "node-a", Export: "data"}, 503, "bucket-unavailable"},
 		{"POST", "/v1/admin/b/down/retention", &adminv1.RetentionRequest{}, 503, "bucket-unavailable"},
 		{"POST", "/v1/admin/b/down/delete-snapshot", del, 503, "bucket-unavailable"},
-		{"POST", "/v1/admin/b/backup/snapshots", &adminv1.SnapshotsRequest{Namespace: "../x"}, 400, "key-invalid"},
-		{"POST", "/v1/admin/b/backup/delete-snapshot", &adminv1.DeleteSnapshotRequest{Namespace: "node-a", Name: ".."}, 400, "key-invalid"},
+		{"POST", "/v1/admin/b/backup/snapshots", &adminv1.SnapshotsRequest{Namespace: "../x", Export: "data"}, 400, "key-invalid"},
+		{"POST", "/v1/admin/b/backup/delete-snapshot", &adminv1.DeleteSnapshotRequest{Namespace: "node-a", Export: "data", Name: ".."}, 400, "key-invalid"},
+		{"POST", "/v1/admin/b/backup/delete-snapshot", &adminv1.DeleteSnapshotRequest{Namespace: "node-a", Name: "s1"}, 400, "key-invalid"},
+		{"POST", "/v1/admin/b/backup/snapshots", &adminv1.SnapshotsRequest{Namespace: "node-a", Export: "data/s1"}, 400, "key-invalid"},
 		{"POST", "/v1/admin/b/backup/snapshots", []byte{0xff}, 400, "request-invalid"},
 		{"GET", "/v1/admin/b/backup/snapshots", nil, 400, "request-invalid"},
 		{"POST", "/v1/admin/b/backup/prune", nil, 400, "request-invalid"},
@@ -169,8 +175,8 @@ func TestAdminSocket(t *testing.T) {
 			calls = append(calls, l)
 		}
 	}
-	if len(calls) != 4+len(refusals) {
-		t.Fatalf("%d admin-call lines, want %d:\n%s", len(calls), 4+len(refusals), e.logs)
+	if len(calls) != 5+len(refusals) {
+		t.Fatalf("%d admin-call lines, want %d:\n%s", len(calls), 5+len(refusals), e.logs)
 	}
 	want := fmt.Sprint(os.Getuid())
 	for _, c := range calls {
@@ -178,11 +184,14 @@ func TestAdminSocket(t *testing.T) {
 			t.Fatalf("uid %v, want %s: %v", c["uid"], want, c)
 		}
 	}
-	if d := calls[2]; d["call"] != "delete-snapshot" || d["bucket"] != "backup" || d["namespace"] != "node-a" ||
-		d["snapshot"] != "s1" || d["code"] != float64(200) {
+	if l := calls[0]; l["call"] != "snapshots" || l["namespace"] != "node-a" || l["export"] != "data" {
+		t.Fatalf("snapshots line %v", l)
+	}
+	if d := calls[3]; d["call"] != "delete-snapshot" || d["bucket"] != "backup" || d["namespace"] != "node-a" ||
+		d["export"] != "data" || d["snapshot"] != "s1" || d["code"] != float64(200) {
 		t.Fatalf("delete line %v", d)
 	}
-	if r := calls[4]; r["code"] != float64(404) || r["reason"] != "snapshot-unknown" {
+	if r := calls[5]; r["code"] != float64(404) || r["reason"] != "snapshot-unknown" {
 		t.Fatalf("refusal line %v", r)
 	}
 }
@@ -199,8 +208,8 @@ func TestAdminRetentionWaits(t *testing.T) {
 	x := fmt.Sprintf("%x", id)
 	store(t, e, "node-a/chunks/"+x[:2]+"/"+x, "c1")
 	for _, s := range []string{"s1", "s2"} {
-		store(t, e, "node-a/refs/"+s, string(id[:]))
-		store(t, e, "node-a/snapshots/"+s, "root "+s)
+		store(t, e, "node-a/refs/data/"+s, string(id[:]))
+		store(t, e, "node-a/snapshots/data/"+s, "root "+s)
 	}
 	later := time.Now().Add(30 * day)
 	e.srv.now = func() time.Time { return later }
@@ -242,7 +251,7 @@ func TestAdminSlowReader(t *testing.T) {
 	old := BodyTimeout
 	BodyTimeout = 50 * time.Millisecond
 	t.Cleanup(func() { BodyTimeout = old })
-	dir := filepath.Join(e.cfg.Buckets[0].Path, "objects", "node-a", "snapshots")
+	dir := filepath.Join(e.cfg.Buckets[0].Path, "objects", "node-a", "snapshots", "data")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +263,7 @@ func TestAdminSlowReader(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	req, _ := proto.Marshal(&adminv1.SnapshotsRequest{Namespace: "node-a"})
+	req, _ := proto.Marshal(&adminv1.SnapshotsRequest{Namespace: "node-a", Export: "data"})
 	c, err := net.Dial("unix", sock)
 	if err != nil {
 		t.Fatal(err)

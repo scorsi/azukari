@@ -153,8 +153,10 @@ func (x *RetentionResponse) GetDryRun() bool {
 
 // POST /v1/admin/b/<bucket>/snapshots
 type SnapshotsRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Namespace string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	// ADR 0030: snapshots are listed per export.
+	Export        string `protobuf:"bytes,2,opt,name=export,proto3" json:"export,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -192,6 +194,13 @@ func (*SnapshotsRequest) Descriptor() ([]byte, []int) {
 func (x *SnapshotsRequest) GetNamespace() string {
 	if x != nil {
 		return x.Namespace
+	}
+	return ""
+}
+
+func (x *SnapshotsRequest) GetExport() string {
+	if x != nil {
+		return x.Export
 	}
 	return ""
 }
@@ -243,7 +252,8 @@ func (x *SnapshotsResponse) GetSnapshots() []*Snapshot {
 
 type Snapshot struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Within the export.
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// The store's receive time of the root, ns since the Unix epoch: the snapshot's age (ADR 0007).
 	ReceiveTime int64 `protobuf:"varint,2,opt,name=receive_time,json=receiveTime,proto3" json:"receive_time,omitempty"`
 	// Body bytes of the root and of its refs list.
@@ -305,9 +315,11 @@ func (x *Snapshot) GetSize() uint64 {
 
 // POST /v1/admin/b/<bucket>/delete-snapshot
 type DeleteSnapshotRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
-	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Namespace string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	// Within the export.
+	Name          string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Export        string `protobuf:"bytes,3,opt,name=export,proto3" json:"export,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -352,6 +364,13 @@ func (x *DeleteSnapshotRequest) GetNamespace() string {
 func (x *DeleteSnapshotRequest) GetName() string {
 	if x != nil {
 		return x.Name
+	}
+	return ""
+}
+
+func (x *DeleteSnapshotRequest) GetExport() string {
+	if x != nil {
+		return x.Export
 	}
 	return ""
 }
@@ -404,18 +423,20 @@ const file_azukari_admin_v1_admin_proto_rawDesc = "" +
 	"\x04refs\x18\x02 \x01(\x04R\x04refs\x12\x16\n" +
 	"\x06chunks\x18\x03 \x01(\x04R\x06chunks\x12\x14\n" +
 	"\x05bytes\x18\x04 \x01(\x04R\x05bytes\x12\x17\n" +
-	"\adry_run\x18\x05 \x01(\bR\x06dryRun\"0\n" +
+	"\adry_run\x18\x05 \x01(\bR\x06dryRun\"H\n" +
 	"\x10SnapshotsRequest\x12\x1c\n" +
-	"\tnamespace\x18\x01 \x01(\tR\tnamespace\"M\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x16\n" +
+	"\x06export\x18\x02 \x01(\tR\x06export\"M\n" +
 	"\x11SnapshotsResponse\x128\n" +
 	"\tsnapshots\x18\x01 \x03(\v2\x1a.azukari.admin.v1.SnapshotR\tsnapshots\"U\n" +
 	"\bSnapshot\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12!\n" +
 	"\freceive_time\x18\x02 \x01(\x03R\vreceiveTime\x12\x12\n" +
-	"\x04size\x18\x03 \x01(\x04R\x04size\"I\n" +
+	"\x04size\x18\x03 \x01(\x04R\x04size\"a\n" +
 	"\x15DeleteSnapshotRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x12\n" +
-	"\x04name\x18\x02 \x01(\tR\x04name\"\x18\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x16\n" +
+	"\x06export\x18\x03 \x01(\tR\x06export\"\x18\n" +
 	"\x16DeleteSnapshotResponseB8Z6github.com/scorsi/azukari/gen/azukari/admin/v1;adminv1b\x06proto3"
 
 var (
