@@ -13,11 +13,15 @@ import (
 // ErrUnknownBucket is returned by the operator calls for a bucket not in the configuration.
 var ErrUnknownBucket = errors.New("bucket unknown")
 
-// Schedule runs each bucket's retention daily at its run_at, local time (ADR 0007), until ctx
-// is done. It returns at once; the runs happen in the background.
+// Schedule runs each bucket's retention daily at its run_at, local time (ADR 0007), and its
+// replication to each replica of its class every `every` (ADR 0008), until ctx is done. It
+// returns at once; the runs happen in the background.
 func (s *Server) Schedule(ctx context.Context) {
 	for name, sb := range s.buckets {
 		go s.schedule(ctx, name, sb.ret.RunAt)
+		for _, r := range sb.replicas {
+			go s.scheduleReplica(ctx, name, r)
+		}
 	}
 }
 
@@ -50,7 +54,7 @@ func nextRun(now time.Time, hour, minute int) time.Time {
 // RunRetention prunes bucket name now (ADR 0007), one run per bucket at a time: dry when
 // dryRun or when its retention is not enabled. It logs prune-completed or prune-failed and,
 // for real deletions, updates the prune metrics (ADR 0009). An unavailable bucket is never
-// pruned (ErrUnavailable).
+// pruned (ErrUnavailable). It waits for the bucket's replication runs to end (ADR 0008).
 func (s *Server) RunRetention(name string, dryRun bool) (bucket.Pruned, error) {
 	sb, ok := s.buckets[name]
 	if !ok {
@@ -96,12 +100,16 @@ func (s *Server) prune(sb *served, dry bool) (bucket.Pruned, error) {
 }
 
 // DeleteSnapshot deletes one snapshot for the operator (ADR 0007): root, then refs; its
-// chunks go at the next run.
+// chunks go at the next run. It waits for the bucket's replication runs to end, as retention
+// does (ADR 0008).
 func (s *Server) DeleteSnapshot(name, namespace, snapshot string) error {
 	b, err := s.bucket(name)
 	if err != nil {
 		return err
 	}
+	sb := s.buckets[name]
+	sb.run.Lock()
+	defer sb.run.Unlock()
 	err = b.DeleteSnapshot(namespace, snapshot)
 	if errors.Is(err, bucket.ErrBecameUnavailable) {
 		s.log.Error("", "event", "bucket-unavailable", "bucket", name, "err", err.Error())

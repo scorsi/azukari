@@ -48,9 +48,13 @@ type Server struct {
 	// New sets it to the azukari_last_snapshot_timestamp_seconds update (ADR 0009).
 	OnSnapshot func(bucket, namespace string, at time.Time)
 	m          metrics
-	// The retention clock (ADR 0007); tests replace it.
+	// The retention and replication clock (ADR 0007, 0008); tests replace it.
 	now   func() time.Time
 	after func(time.Duration) <-chan time.Time
+	// isMount checks a dir replica's mount_point (ADR 0008) as New checked the buckets'.
+	isMount func(string) (bool, error)
+	// onPhase, when set by a test, is called before each rsync call of a replication run.
+	onPhase func(phase string)
 }
 
 type served struct {
@@ -58,7 +62,10 @@ type served struct {
 	nodes map[string]bool
 	b     *bucket.Bucket // nil: unavailable since start (ADR 0004)
 	ret   config.Retention
-	run   sync.Mutex // one retention run at a time
+	// Retention and operator deletions hold it for writing, one at a time; replication runs
+	// hold it for reading and never wait for it (ADR 0008: skipped while retention runs).
+	run      sync.RWMutex
+	replicas []config.Replica // its class's, in the class's order (ADR 0008)
 }
 
 // New opens every bucket (ADR 0004), logging bucket-created and bucket-unavailable. isMount
@@ -66,9 +73,14 @@ type served struct {
 func New(cfg *config.Server, src *svid.Source, log *slog.Logger, isMount func(string) (bool, error)) (*Server, error) {
 	s := &Server{log: log, src: src, buckets: map[string]*served{}, granted: map[string]bool{},
 		m: metrics{requests: map[reqKey]uint64{}, received: map[string]uint64{}, snapshots: map[nsKey]int64{},
-			prunedBytes: map[string]uint64{}, pruneSuccess: map[string]int64{}},
-		now: time.Now, after: time.After}
+			prunedBytes: map[string]uint64{}, pruneSuccess: map[string]int64{},
+			replicationSuccess: map[replicaKey]int64{}, replicationRuns: map[runKey]uint64{}},
+		now: time.Now, after: time.After, isMount: isMount}
 	s.OnSnapshot = s.recordSnapshot
+	replicas := map[string]config.Replica{}
+	for _, r := range cfg.Replicas {
+		replicas[r.Name] = r
+	}
 	for _, c := range cfg.Buckets {
 		reserve, err := config.ParseSize(c.DiskReserve)
 		if err != nil {
@@ -79,6 +91,10 @@ func New(cfg *config.Server, src *svid.Source, log *slog.Logger, isMount func(st
 		for _, id := range c.Nodes {
 			sb.nodes[id] = true
 			s.granted[id] = true
+		}
+		for _, r := range cfg.Classes[c.Class].Replicas {
+			sb.replicas = append(sb.replicas, replicas[r])
+			s.m.replicationSuccess[replicaKey{c.Name, r}] = 0
 		}
 		switch state, err := bucket.Open(c.Path, c.MountPoint, isMount); state {
 		case bucket.Unavailable:

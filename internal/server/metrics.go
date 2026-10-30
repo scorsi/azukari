@@ -29,6 +29,9 @@ type metrics struct {
 	// By bucket, real deletions only (ADR 0007, 0009).
 	prunedBytes  map[string]uint64
 	pruneSuccess map[string]int64 // Unix seconds, 0: none since start
+	// By bucket and replica (ADR 0008, 0009).
+	replicationSuccess map[replicaKey]int64 // Unix seconds, 0: none since start
+	replicationRuns    map[runKey]uint64
 }
 
 type reqKey struct{ bucket, call, code string }
@@ -162,6 +165,18 @@ func (s *Server) writeMetrics(w io.Writer, version string) {
 	family(&b, "azukari_pruned_bytes_total", "counter", "Body bytes deleted by retention runs (dry runs excluded).")
 	for _, n := range sorted(s.m.prunedBytes, strings.Compare) {
 		fmt.Fprintf(&b, "azukari_pruned_bytes_total{bucket=%s} %d\n", q(n), s.m.prunedBytes[n])
+	}
+	family(&b, "azukari_replication_last_success_timestamp_seconds", "gauge", "End of the last completed replication run, 0 for none since start.")
+	for _, k := range sorted(s.m.replicationSuccess, func(a, b replicaKey) int {
+		return cmp.Or(strings.Compare(a.bucket, b.bucket), strings.Compare(a.replica, b.replica))
+	}) {
+		fmt.Fprintf(&b, "azukari_replication_last_success_timestamp_seconds{bucket=%s,replica=%s} %d\n", q(k.bucket), q(k.replica), s.m.replicationSuccess[k])
+	}
+	family(&b, "azukari_replication_runs_total", "counter", "Replication runs by result: completed, failed or skipped.")
+	for _, k := range sorted(s.m.replicationRuns, func(a, b runKey) int {
+		return cmp.Or(strings.Compare(a.bucket, b.bucket), strings.Compare(a.replica, b.replica), strings.Compare(a.result, b.result))
+	}) {
+		fmt.Fprintf(&b, "azukari_replication_runs_total{bucket=%s,replica=%s,result=%s} %d\n", q(k.bucket), q(k.replica), q(k.result), s.m.replicationRuns[k])
 	}
 	family(&b, "azukari_tls_handshake_errors_total", "counter", "Failed TLS handshakes on the store's listeners.")
 	fmt.Fprintf(&b, "azukari_tls_handshake_errors_total %d\n", s.m.handshake)

@@ -1,4 +1,8 @@
-{ lib, buildGoModule }:
+{
+  lib,
+  buildGoModule,
+  rsync,
+}:
 buildGoModule (finalAttrs: {
   pname = "azukari";
   version = "0.0.0-dev";
@@ -34,6 +38,9 @@ buildGoModule (finalAttrs: {
     "-w"
     "-X main.version=${finalAttrs.version}" # azukari_build_info
   ];
+
+  # The replication tests run the real rsync against local directories (ADR 0008).
+  nativeCheckInputs = [ rsync ];
 
   # `nix flake check` runs this phase. The default one tests only subPackages (the commands),
   # never internal/ nor gen/: vet and test the whole module instead.

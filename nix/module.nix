@@ -16,10 +16,12 @@ let
   exe = lib.getExe' cfg.package "azukari-server";
   buckets = cfg.settings.buckets or [ ];
   path = "/etc/azukari/azukari-server.toml";
-  # The buckets' mount units, `/` (always mounted) left out.
+  # Replicas the store writes on this host (ADR 0008), each on its own mount like a bucket.
+  dirReplicas = lib.filter (r: r.kind or "" == "dir") (cfg.settings.replicas or [ ]);
+  # The buckets' and dir replicas' mount units, `/` (always mounted) left out.
   mounts = lib.unique (
-    map (b: "${utils.escapeSystemdPath b.mount_point}.mount") (
-      lib.filter (b: b.mount_point != "/") buckets
+    map (x: "${utils.escapeSystemdPath x.mount_point}.mount") (
+      lib.filter (x: x.mount_point != "/") (buckets ++ dirReplicas)
     )
   );
 
@@ -89,6 +91,11 @@ in
       # buckets. Ordering only: no Wants= (it would mount a `noauto` disk) and no Requires= nor
       # RequiresMountsFor= (a disk that did not mount must not keep the store down, ADR 0004).
       after = [ "network-online.target" ] ++ mounts;
+      # Replication runs rsync, over ssh for kind ssh (ADR 0008).
+      path = [
+        pkgs.rsync
+        pkgs.openssh
+      ];
       # A reload re-reads only the SVID files: a configuration change restarts.
       restartTriggers = [ configFile ];
       serviceConfig = {
@@ -104,8 +111,12 @@ in
         Group = "azukari-admin";
         SupplementaryGroups = [ "azukari" ];
         RuntimeDirectory = "azukari";
-        # `-`: a bucket whose disk is absent has no `path`, and must not fail the unit.
-        ReadWritePaths = lib.unique (map (b: "-${b.path}") buckets);
+        # `-`: a bucket or replica whose disk is absent has no `path` nor `destination`, and must
+        # not fail the unit. The deployment makes each dir replica's destination, writable by
+        # the store.
+        ReadWritePaths = lib.unique (
+          map (b: "-${b.path}") buckets ++ map (r: "-${r.destination}") dirReplicas
+        );
         # One line per request: 1000 lines/s sustained before journald drops (ADR 0009).
         LogRateLimitIntervalSec = lib.mkDefault "30s";
         LogRateLimitBurst = lib.mkDefault 30000;

@@ -15,7 +15,27 @@
         key_file = "/var/lib/hanko/azukari/key.pem";
         bundle_file = "/var/lib/hanko/azukari/bundle.pem";
       };
-      classes.standard.replicas = [ ];
+      classes.standard.replicas = [
+        "offsite"
+        "local"
+      ];
+      replicas = [
+        {
+          name = "offsite";
+          kind = "ssh";
+          destination = "azukari@backup.example.org:azukari";
+          ssh_key_file = "/var/lib/azukari-ssh/id_ed25519";
+          known_hosts_file = "/var/lib/azukari-ssh/known_hosts";
+          every = "1d";
+        }
+        {
+          name = "local";
+          kind = "dir";
+          destination = "/srv/usb/azukari";
+          mount_point = "/srv/usb";
+          every = "1d";
+        }
+      ];
       buckets = [
         {
           name = "backup";

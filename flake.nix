@@ -118,7 +118,11 @@
                 && sc.SupplementaryGroups == [ "azukari" ]
                 && sc.RuntimeDirectory == "azukari"
                 && sc.Restart == "on-failure"
-                && sc.ReadWritePaths == [ "-/srv/disk-1/azukari/backup" ]
+                &&
+                  sc.ReadWritePaths == [
+                    "-/srv/disk-1/azukari/backup"
+                    "-/srv/usb/azukari"
+                  ]
                 && sc.LogRateLimitIntervalSec == "30s"
                 && sc.LogRateLimitBurst == 30000
                 && sc.ProtectSystem == "strict"
@@ -127,7 +131,12 @@
                 && !(sc ? DynamicUser);
               # The store starts after its buckets' mounts (escaped unit names, `/` left out) but a
               # disk may be absent at start (ADR 0004): ordering only. No firewall opening.
-              assert lib.elem "srv-disk\\x2d1.mount" unit.after;
+              assert lib.elem "srv-disk\\x2d1.mount" unit.after && lib.elem "srv-usb.mount" unit.after;
+              # Replication's rsync and ssh (ADR 0008).
+              assert lib.all (n: lib.any (p: lib.getName p == n) unit.path) [
+                "rsync"
+                "openssh"
+              ];
               assert !(lib.elem "-.mount" rootBucket.after);
               assert
                 !(lib.any (u: lib.hasSuffix ".mount" u) (
@@ -372,6 +381,7 @@
               pkgs.gopls
               pkgs.buf
               pkgs.protoc-gen-go
+              pkgs.rsync
             ];
           };
 
