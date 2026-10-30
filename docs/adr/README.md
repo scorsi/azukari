@@ -32,3 +32,4 @@ Decision / Consequences. A decision is changed by a new ADR that supersedes the 
 | [0025](0025-root-requires-refs.md) | A root is accepted only with its refs |
 | [0026](0026-replication-quick-check.md) | Replication compares sizes and modification times |
 | [0027](0027-replication-skipped.md) | A skipped replication run |
+| [0028](0028-one-operator-command.md) | One operator command |
