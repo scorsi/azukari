@@ -259,13 +259,13 @@ func (b *Bucket) validate(at, trustDomain string, classes map[string]Class, add 
 	r := &b.Retention
 	if r.Keep == "" {
 		add("%s: retention.keep required", at)
-	} else if _, err := parseDuration(r.Keep); err != nil {
+	} else if _, err := ParseDuration(r.Keep); err != nil {
 		add("%s: retention.keep: %v", at, err)
 	}
 	if r.Grace == "" {
 		r.Grace = DefaultGrace
 	}
-	if _, err := parseDuration(r.Grace); err != nil {
+	if _, err := ParseDuration(r.Grace); err != nil {
 		add("%s: retention.grace: %v", at, err)
 	}
 	if !runAtRE.MatchString(r.RunAt) {
@@ -274,7 +274,7 @@ func (b *Bucket) validate(at, trustDomain string, classes map[string]Class, add 
 }
 
 func (r *Replica) validate(at string, add func(string, ...any)) {
-	if _, err := parseDuration(r.Every); err != nil {
+	if _, err := ParseDuration(r.Every); err != nil {
 		add("%s: every: %v", at, err)
 	}
 	switch r.Kind {
@@ -347,8 +347,8 @@ func validSegment(s string, re *regexp.Regexp) bool {
 	return s != "." && s != ".." && re.MatchString(s)
 }
 
-// parseDuration reads ADR 0007's durations: d, h, m, s in that order, e.g. "30d" or "1d12h"; positive.
-func parseDuration(s string) (time.Duration, error) {
+// ParseDuration reads ADR 0007's durations: d, h, m, s in that order, e.g. "30d" or "1d12h"; positive.
+func ParseDuration(s string) (time.Duration, error) {
 	m := durationRE.FindStringSubmatch(s)
 	bad := fmt.Errorf("%q must be a positive duration of d, h, m, s such as \"30d\" or \"1d12h\"", s)
 	if s == "" || m == nil {

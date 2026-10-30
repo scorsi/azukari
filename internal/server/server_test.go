@@ -91,7 +91,8 @@ func start(t *testing.T) *env {
 			t.Fatal(err)
 		}
 		return config.Bucket{Name: name, Type: "backup", Path: filepath.Join(mount, "b"), MountPoint: mount,
-			MaxObjectBytes: 1024, DiskReserve: reserve, Nodes: []string{nodeA}}
+			MaxObjectBytes: 1024, DiskReserve: reserve, Nodes: []string{nodeA},
+			Retention: config.Retention{Keep: "10d", Grace: "2d", RunAt: "03:30"}}
 	}
 	cfg := &config.Server{Buckets: []config.Bucket{bkt("backup", "0B"), bkt("down", "0B"), bkt("full", "1000TiB")}}
 	files := ca.SVID(t, serverID)

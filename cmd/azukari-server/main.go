@@ -93,5 +93,6 @@ func run(cfg *config.Server, log *slog.Logger) error {
 	}()
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+	srv.Schedule(ctx) // daily retention runs (ADR 0007)
 	return srv.Serve(ctx, lns)
 }

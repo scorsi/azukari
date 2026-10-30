@@ -26,6 +26,9 @@ type metrics struct {
 	received  map[string]uint64 // by bucket
 	handshake uint64
 	snapshots map[nsKey]int64 // Unix seconds, 0: no snapshot yet
+	// By bucket, real deletions only (ADR 0007, 0009).
+	prunedBytes  map[string]uint64
+	pruneSuccess map[string]int64 // Unix seconds, 0: none since start
 }
 
 type reqKey struct{ bucket, call, code string }
@@ -151,6 +154,14 @@ func (s *Server) writeMetrics(w io.Writer, version string) {
 		return cmp.Or(strings.Compare(a.bucket, b.bucket), strings.Compare(a.namespace, b.namespace))
 	}) {
 		fmt.Fprintf(&b, "azukari_last_snapshot_timestamp_seconds{bucket=%s,namespace=%s} %d\n", q(k.bucket), q(k.namespace), s.m.snapshots[k])
+	}
+	family(&b, "azukari_prune_last_success_timestamp_seconds", "gauge", "End of the last retention run that deleted for real, 0 for none since start.")
+	for _, n := range sorted(s.m.pruneSuccess, strings.Compare) {
+		fmt.Fprintf(&b, "azukari_prune_last_success_timestamp_seconds{bucket=%s} %d\n", q(n), s.m.pruneSuccess[n])
+	}
+	family(&b, "azukari_pruned_bytes_total", "counter", "Body bytes deleted by retention runs (dry runs excluded).")
+	for _, n := range sorted(s.m.prunedBytes, strings.Compare) {
+		fmt.Fprintf(&b, "azukari_pruned_bytes_total{bucket=%s} %d\n", q(n), s.m.prunedBytes[n])
 	}
 	family(&b, "azukari_tls_handshake_errors_total", "counter", "Failed TLS handshakes on the store's listeners.")
 	fmt.Fprintf(&b, "azukari_tls_handshake_errors_total %d\n", s.m.handshake)

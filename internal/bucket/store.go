@@ -481,8 +481,8 @@ func (b *Bucket) List(prefix, startAfter string, limit int) (objs []Object, next
 // LastSnapshot is the receive time of namespace's newest snapshots/* object, false when it
 // has none: read once at start for azukari_last_snapshot_timestamp_seconds (ADR 0009).
 func (b *Bucket) LastSnapshot(namespace string) (time.Time, bool, error) {
-	if err := key.Check(namespace); err != nil || strings.Contains(namespace, "/") {
-		return time.Time{}, false, fmt.Errorf("%w: namespace %q", key.ErrInvalid, namespace)
+	if err := checkNamespace(namespace); err != nil {
+		return time.Time{}, false, err
 	}
 	dir := filepath.Join(b.path, "objects", namespace, "snapshots")
 	entries, err := os.ReadDir(dir)

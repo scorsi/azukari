@@ -73,12 +73,12 @@ func TestParseDuration(t *testing.T) {
 		"48h": 48 * time.Hour, "30d": 30 * 24 * time.Hour, "1d12h": 36 * time.Hour,
 		"90s": 90 * time.Second, "1d2h3m4s": 26*time.Hour + 3*time.Minute + 4*time.Second,
 	} {
-		if got, err := parseDuration(s); err != nil || got != want {
+		if got, err := ParseDuration(s); err != nil || got != want {
 			t.Errorf("%q: %v %v", s, got, err)
 		}
 	}
 	for _, s := range []string{"", "0s", "0d0h", "1w", "1h1d", "1.5h", "-1h", "1 h", "1H", "106752d"} {
-		if _, err := parseDuration(s); err == nil {
+		if _, err := ParseDuration(s); err == nil {
 			t.Errorf("%q accepted", s)
 		}
 	}

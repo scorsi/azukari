@@ -48,26 +48,34 @@ type Server struct {
 	// New sets it to the azukari_last_snapshot_timestamp_seconds update (ADR 0009).
 	OnSnapshot func(bucket, namespace string, at time.Time)
 	m          metrics
+	// The retention clock (ADR 0007); tests replace it.
+	now   func() time.Time
+	after func(time.Duration) <-chan time.Time
 }
 
 type served struct {
 	path  string
 	nodes map[string]bool
 	b     *bucket.Bucket // nil: unavailable since start (ADR 0004)
+	ret   config.Retention
+	run   sync.Mutex // one retention run at a time
 }
 
 // New opens every bucket (ADR 0004), logging bucket-created and bucket-unavailable. isMount
 // is bucket.IsMountPoint outside tests.
 func New(cfg *config.Server, src *svid.Source, log *slog.Logger, isMount func(string) (bool, error)) (*Server, error) {
 	s := &Server{log: log, src: src, buckets: map[string]*served{}, granted: map[string]bool{},
-		m: metrics{requests: map[reqKey]uint64{}, received: map[string]uint64{}, snapshots: map[nsKey]int64{}}}
+		m: metrics{requests: map[reqKey]uint64{}, received: map[string]uint64{}, snapshots: map[nsKey]int64{},
+			prunedBytes: map[string]uint64{}, pruneSuccess: map[string]int64{}},
+		now: time.Now, after: time.After}
 	s.OnSnapshot = s.recordSnapshot
 	for _, c := range cfg.Buckets {
 		reserve, err := config.ParseSize(c.DiskReserve)
 		if err != nil {
 			return nil, err
 		}
-		sb := &served{path: c.Path, nodes: map[string]bool{}}
+		sb := &served{path: c.Path, nodes: map[string]bool{}, ret: c.Retention}
+		s.m.prunedBytes[c.Name], s.m.pruneSuccess[c.Name] = 0, 0
 		for _, id := range c.Nodes {
 			sb.nodes[id] = true
 			s.granted[id] = true
