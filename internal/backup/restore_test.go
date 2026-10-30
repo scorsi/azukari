@@ -33,7 +33,7 @@ import (
 func (e *env) restore(name, target string, verify bool) error {
 	// The restored d1 is read-only: let t.TempDir's cleanup remove it.
 	defer os.Chmod(filepath.Join(target, e.tree, "d1"), 0o755)
-	return Restore(context.Background(), e.cfg, "", name, target, verify, logging.New(e.logs, slog.LevelInfo))
+	return Restore(context.Background(), e.cfg, "", "data", name, target, verify, logging.New(e.logs, slog.LevelInfo))
 }
 
 // sameTree compares src with its copy under target: types, content, modes, mtimes, symlink
@@ -91,7 +91,7 @@ func TestRestore(t *testing.T) {
 	first := e.run(t)
 
 	target := filepath.Join(t.TempDir(), "r")
-	if err := Restore(context.Background(), e.cfg, "", first, target, false, logging.New(e.logs, slog.LevelInfo)); err != nil {
+	if err := Restore(context.Background(), e.cfg, "", "data", first, target, false, logging.New(e.logs, slog.LevelInfo)); err != nil {
 		t.Fatalf("restore: %v\n%s", err, e.logs.b.String())
 	}
 	sameTree(t, e.tree, target)
@@ -137,7 +137,7 @@ func TestRestore(t *testing.T) {
 	}
 	// An existing empty directory is a valid target, as an absent one.
 	empty := t.TempDir()
-	if err := Restore(context.Background(), e.cfg, "", second, empty, false, logging.New(e.logs, slog.LevelInfo)); err != nil {
+	if err := Restore(context.Background(), e.cfg, "", "data", second, empty, false, logging.New(e.logs, slog.LevelInfo)); err != nil {
 		t.Fatalf("restore into an existing empty target: %v", err)
 	}
 	sameTree(t, e.tree, empty)
@@ -145,7 +145,7 @@ func TestRestore(t *testing.T) {
 
 	// Both listed, first field the name.
 	var out bytes.Buffer
-	if err := Snapshots(context.Background(), e.cfg, "", &out, logging.New(e.logs, slog.LevelInfo)); err != nil {
+	if err := Snapshots(context.Background(), e.cfg, "", "data", &out, logging.New(e.logs, slog.LevelInfo)); err != nil {
 		t.Fatal(err)
 	}
 	var names []string
@@ -244,12 +244,12 @@ func (e *env) crafted(t *testing.T, entries []*backupv1.Entry) string {
 		t.Fatal(err)
 	}
 	const name = "20261029T120000Z-0badf00d"
-	if _, err := e.c.Put(ctx, "node-a/refs/"+name, id[:]); err != nil {
+	if _, err := e.c.Put(ctx, "node-a/refs/data/"+name, id[:]); err != nil {
 		t.Fatal(err)
 	}
 	root, _ := proto.Marshal(&backupv1.Root{Format: Format, Paths: []string{"/a"}, MetadataChunks: [][]byte{id[:]},
 		Totals: &backupv1.Totals{Entries: uint64(len(entries)), Chunks: 1}})
-	if _, err := e.c.Put(ctx, "node-a/snapshots/"+name, e.key.SealRoot(name, root)); err != nil {
+	if _, err := e.c.Put(ctx, "node-a/snapshots/data/"+name, e.key.SealRoot("data", name, root)); err != nil {
 		t.Fatal(err)
 	}
 	return name
@@ -314,15 +314,15 @@ func TestRestoreFromDir(t *testing.T) {
 	body := other.Config()
 	write(t, filepath.Join(copyDir, "objects/node-b/config"), append(bucket.Header{Size: uint64(len(body)), SHA256: sha256.Sum256(body)}.Encode(), body...))
 	// What an interrupted rsync leaves behind, and the store's own temporary files.
-	write(t, filepath.Join(copyDir, "objects/node-a/snapshots/."+name+".Xy12Ab"), []byte("partial"))
+	write(t, filepath.Join(copyDir, "objects/node-a/snapshots/data/."+name+".Xy12Ab"), []byte("partial"))
 	write(t, filepath.Join(copyDir, "objects/node-a/.node-a.Q1w2E3"), []byte("partial"))
 	write(t, filepath.Join(copyDir, "tmp/put-123"), []byte("partial"))
 
-	cfg := &config.Backup{Bucket: "backup", DataKeyFile: e.cfg.DataKeyFile, Paths: e.cfg.Paths}
+	cfg := &config.Backup{Bucket: "backup", DataKeyFile: e.cfg.DataKeyFile, Exports: e.cfg.Exports}
 	log := logging.New(e.logs, slog.LevelInfo)
 	restore := func(target string, verify bool) error {
 		defer os.Chmod(filepath.Join(target, e.tree, "d1"), 0o755)
-		return Restore(context.Background(), cfg, copyDir, name, target, verify, log)
+		return Restore(context.Background(), cfg, copyDir, "data", name, target, verify, log)
 	}
 	target := filepath.Join(t.TempDir(), "r")
 	if err := restore(target, false); err != nil {
@@ -339,10 +339,10 @@ func TestRestoreFromDir(t *testing.T) {
 
 	// Same listing as the store's.
 	var fromStore, fromCopy bytes.Buffer
-	if err := Snapshots(context.Background(), e.cfg, "", &fromStore, log); err != nil {
+	if err := Snapshots(context.Background(), e.cfg, "", "data", &fromStore, log); err != nil {
 		t.Fatal(err)
 	}
-	if err := Snapshots(context.Background(), cfg, copyDir, &fromCopy, log); err != nil {
+	if err := Snapshots(context.Background(), cfg, copyDir, "data", &fromCopy, log); err != nil {
 		t.Fatal(err)
 	}
 	if fromCopy.String() != fromStore.String() || !strings.HasPrefix(fromCopy.String(), name+" ") {
@@ -400,7 +400,7 @@ func TestRestoreFromDir(t *testing.T) {
 	// A wrong key finds no namespace; a copy whose node directory is a symlink is refused.
 	wrong := *cfg
 	wrong.DataKeyFile = writeKey(t, strings.Repeat("ab", 32))
-	if err := Restore(context.Background(), &wrong, copyDir, name, filepath.Join(t.TempDir(), "r"), true, log); err == nil || !strings.Contains(err.Error(), "no namespace") {
+	if err := Restore(context.Background(), &wrong, copyDir, "data", name, filepath.Join(t.TempDir(), "r"), true, log); err == nil || !strings.Contains(err.Error(), "no namespace") {
 		t.Errorf("wrong key: %v", err)
 	}
 	if err := os.Rename(filepath.Join(copyDir, "objects/node-a"), filepath.Join(copyDir, "node-a")); err != nil {
@@ -409,6 +409,18 @@ func TestRestoreFromDir(t *testing.T) {
 	os.Symlink("../node-a", filepath.Join(copyDir, "objects/node-a"))
 	if err := restore(filepath.Join(t.TempDir(), "r"), true); err == nil || !strings.Contains(err.Error(), "symlink refused") {
 		t.Errorf("symlinked namespace: %v", err)
+	}
+
+	// A version 1 bucket is refused (ADR 0030).
+	if err := os.WriteFile(filepath.Join(copyDir, "FORMAT"), []byte("1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := restore(filepath.Join(t.TempDir(), "r"), true); err == nil || !strings.Contains(err.Error(), `FORMAT holds "1\n", want "2\n"`) {
+		t.Errorf("version 1 copy: %v", err)
+	}
+	var out bytes.Buffer
+	if err := Snapshots(context.Background(), cfg, copyDir, "data", &out, log); err == nil || out.Len() != 0 {
+		t.Errorf("snapshots of a version 1 copy: %v %q", err, out.String())
 	}
 }
 
@@ -422,7 +434,7 @@ func TestRestoreFromDirBoundaries(t *testing.T) {
 	root, _ := e.snapshot(t, name)
 	meta := seal.ChunkPath([32]byte(root.MetadataChunks[0])) // read before any entry is written
 	fanout := path.Dir(meta)
-	cfg := &config.Backup{Bucket: "backup", DataKeyFile: e.cfg.DataKeyFile, Paths: e.cfg.Paths}
+	cfg := &config.Backup{Bucket: "backup", DataKeyFile: e.cfg.DataKeyFile, Exports: e.cfg.Exports}
 	log := logging.New(e.logs, slog.LevelInfo)
 	fresh := func(t *testing.T) string {
 		dir := filepath.Join(t.TempDir(), "copy")
@@ -449,12 +461,12 @@ func TestRestoreFromDirBoundaries(t *testing.T) {
 		}
 		target := filepath.Join(t.TempDir(), "r")
 		defer os.Chmod(filepath.Join(target, e.tree, "d1"), 0o755)
-		if err := Restore(context.Background(), cfg, dir, name, target, false, log); err != nil {
+		if err := Restore(context.Background(), cfg, dir, "data", name, target, false, log); err != nil {
 			t.Fatalf("restore: %v", err)
 		}
 		sameTree(t, e.tree, target)
 		var out bytes.Buffer
-		if err := Snapshots(context.Background(), cfg, dir, &out, log); err != nil || !strings.HasPrefix(out.String(), name+" ") {
+		if err := Snapshots(context.Background(), cfg, dir, "data", &out, log); err != nil || !strings.HasPrefix(out.String(), name+" ") {
 			t.Errorf("snapshots: %v %q", err, out.String())
 		}
 	})
@@ -485,7 +497,7 @@ func TestRestoreFromDirBoundaries(t *testing.T) {
 			}
 			target := t.TempDir()
 			done := make(chan error, 1)
-			go func() { done <- Restore(context.Background(), cfg, dir, name, target, false, log) }()
+			go func() { done <- Restore(context.Background(), cfg, dir, "data", name, target, false, log) }()
 			select {
 			case err := <-done:
 				if err == nil || !regexp.MustCompile(tc.want).MatchString(err.Error()) {
@@ -498,5 +510,82 @@ func TestRestoreFromDirBoundaries(t *testing.T) {
 				t.Errorf("target holds %v (%v)", names, err)
 			}
 		})
+	}
+}
+
+// Two exports of one node (ADR 0030): each run backs up its own paths into its own
+// snapshots, chunks deduplicate across them, and snapshots and restore see one export only.
+func TestTwoExports(t *testing.T) {
+	e := start(t)
+	e.makeTree(t)
+	data := e.tree
+	e.tree = filepath.Join(t.TempDir(), "w")
+	e.makeTree(t) // same big file (same seed): its chunks are already in the store
+	write(t, filepath.Join(e.tree, "own.txt"), []byte("web only\n"))
+	web := e.tree
+	e.cfg.Exports["web"] = config.Export{Paths: []string{web}}
+	log := logging.New(e.logs, slog.LevelInfo)
+
+	first, err := Run(context.Background(), e.cfg, "data", log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Run(context.Background(), e.cfg, "web", log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.logs.count(`"backup-completed","bucket":"backup","export":"web"`) != 1 {
+		t.Errorf("no backup-completed for export web:\n%s", e.logs.b.String())
+	}
+	keys := e.list(t)
+	for _, k := range []string{"node-a/snapshots/data/" + first, "node-a/refs/data/" + first, "node-a/snapshots/web/" + second, "node-a/refs/web/" + second} {
+		if !slices.Contains(keys, k) {
+			t.Errorf("%s missing from %v", k, keys)
+		}
+	}
+	plain, err := e.key.OpenRoot("web", second, e.get(t, "node-a/snapshots/web/"+second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := &backupv1.Root{}
+	if err := proto.Unmarshal(plain, root); err != nil {
+		t.Fatal(err)
+	}
+	// New: text.txt and nested.txt share data's content too; own.txt and the metadata stream are new.
+	if !slices.Equal(root.Paths, []string{web}) || root.Totals.NewChunks == 0 || root.Totals.NewChunks > 2 || root.Totals.Chunks < 5 {
+		t.Errorf("web root = %v", root)
+	}
+
+	for export, want := range map[string]string{"data": first, "web": second} {
+		var out bytes.Buffer
+		if err := Snapshots(context.Background(), e.cfg, "", export, &out, log); err != nil {
+			t.Fatal(err)
+		}
+		if lines := strings.Split(strings.TrimSpace(out.String()), "\n"); len(lines) != 1 || !strings.HasPrefix(lines[0], want+" ") {
+			t.Errorf("snapshots %s:\n%s", export, out.String())
+		}
+	}
+	target := filepath.Join(t.TempDir(), "r")
+	if err := Restore(context.Background(), e.cfg, "", "web", second, target, false, log); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(filepath.Join(target, web, "d1"), 0o755)
+	sameTree(t, web, target)
+	if _, err := os.Lstat(filepath.Join(target, data)); !os.IsNotExist(err) {
+		t.Errorf("web's restore holds data's tree: %v", err)
+	}
+
+	// data's snapshot is not web's; an export name is one key segment; run needs a configured one.
+	if err := Restore(context.Background(), e.cfg, "", "web", first, filepath.Join(t.TempDir(), "x"), true, log); err == nil {
+		t.Error("data's snapshot restored as web's")
+	}
+	if err := Restore(context.Background(), e.cfg, "", "a/b", second, filepath.Join(t.TempDir(), "x"), true, log); err == nil || !strings.Contains(err.Error(), "key segment") {
+		t.Errorf("export a/b: %v", err)
+	}
+	if _, err := Run(context.Background(), e.cfg, "db", log); err == nil || !strings.Contains(err.Error(), "not in the configuration") {
+		t.Errorf("run of an unknown export: %v", err)
+	}
+	if e.logs.count(`"export":"db"`) != 1 {
+		t.Error("backup-failed without its export")
 	}
 }

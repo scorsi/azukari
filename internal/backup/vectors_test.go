@@ -15,9 +15,11 @@ import (
 )
 
 // Fixed format vectors (ADR 0006, 0010) under the seal package's test key (keyA). Never
-// regenerate testdata/metadata-v1.bin or testdata/root-v1.bin: a change is a format version.
+// regenerate testdata/metadata-v1.bin or testdata/root-v2.bin: a change is a format version.
+// root-v2.bin replaced root-v1.bin at format 2 (ADR 0030): Format 2 and the aad
+// snapshots/<export>/<name>; the metadata stream did not change, so metadata-v1.bin stays.
 
-const vectorRootName = "20261029T120000Z-0011aabb"
+const vectorExport, vectorRootName = "data", "20261029T120000Z-0011aabb"
 
 func id32(b byte) []byte { return bytes.Repeat([]byte{b}, 32) }
 
@@ -78,7 +80,7 @@ func TestMetadataVector(t *testing.T) {
 
 func TestRootVector(t *testing.T) {
 	k := vectorKey(t)
-	sealed, err := os.ReadFile("testdata/root-v1.bin")
+	sealed, err := os.ReadFile("testdata/root-v2.bin")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +88,7 @@ func TestRootVector(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := k.OpenRoot(vectorRootName, sealed)
+	p, err := k.OpenRoot(vectorExport, vectorRootName, sealed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +98,7 @@ func TestRootVector(t *testing.T) {
 	}
 	metaID := k.ChunkID(stream)
 	want := &backupv1.Root{
-		Format: 1, StartTimeNs: 1793275200000000000, EndTimeNs: 1793275261500000000,
+		Format: 2, StartTimeNs: 1793275200000000000, EndTimeNs: 1793275261500000000,
 		Paths: []string{"/etc", "/var/lib/a"}, MetadataChunks: [][]byte{metaID[:]},
 		Totals: &backupv1.Totals{Entries: 5, Bytes: 5<<20 + 1, Chunks: 4, NewChunks: 2},
 	}

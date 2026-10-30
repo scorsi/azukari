@@ -12,8 +12,9 @@ import (
 	"syscall"
 )
 
-// FormatContent is FORMAT's whole content: layout version 1 (ADR 0004).
-const FormatContent = "1\n"
+// FormatContent is FORMAT's whole content: format version 2, one snapshot per export (ADR
+// 0004, 0030). A bucket of another version is refused, by the store and by a restore.
+const FormatContent = "2\n"
 
 // State is a bucket's state after Open.
 type State int

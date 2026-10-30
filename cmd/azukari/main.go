@@ -30,10 +30,10 @@ commands:
   retention <bucket> [--dry-run]                 run the bucket's retention now, wait for its end
   snapshots <bucket> <namespace>                 list a namespace's snapshots, oldest first
   delete-snapshot <bucket> <namespace> <name>    delete one snapshot; its chunks go at the next run
-  backup snapshots [--from-dir <bucket copy>] <config.toml>
-                                                 list this node's snapshots
-  backup restore [--verify] [--from-dir <bucket copy>] <config.toml> <snapshot> <target>
-                                                 restore a snapshot into target, an empty or absent directory
+  backup snapshots [--from-dir <bucket copy>] <config.toml> <export>
+                                                 list this node's snapshots of export
+  backup restore [--verify] [--from-dir <bucket copy>] <config.toml> <export> <snapshot> <target>
+                                                 restore a snapshot of export into target, an empty or absent directory
 
 --socket defaults to /run/azukari/admin.sock. backup runs azukari-backup, installed next to
 azukari, with the same arguments, environment and privileges (ADR 0028).

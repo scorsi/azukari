@@ -186,15 +186,18 @@ func TestOpenRefusals(t *testing.T) {
 func TestRoot(t *testing.T) {
 	k := testKey(t)
 	p := []byte("root bytes")
-	a, b := k.SealRoot("20261029T120000Z-0011aabb", p), k.SealRoot("20261029T120000Z-0011aabb", p)
+	a, b := k.SealRoot("data", "20261029T120000Z-0011aabb", p), k.SealRoot("data", "20261029T120000Z-0011aabb", p)
 	if bytes.Equal(a, b) {
 		t.Error("two root seals share a nonce")
 	}
-	if got, err := k.OpenRoot("20261029T120000Z-0011aabb", a); err != nil || !bytes.Equal(got, p) {
+	if got, err := k.OpenRoot("data", "20261029T120000Z-0011aabb", a); err != nil || !bytes.Equal(got, p) {
 		t.Errorf("open = %q, %v", got, err)
 	}
-	if _, err := k.OpenRoot("20261029T120000Z-0011aabc", a); !errors.Is(err, ErrCorrupt) {
+	if _, err := k.OpenRoot("data", "20261029T120000Z-0011aabc", a); !errors.Is(err, ErrCorrupt) {
 		t.Errorf("other name: err = %v", err)
+	}
+	if _, err := k.OpenRoot("web", "20261029T120000Z-0011aabb", a); !errors.Is(err, ErrCorrupt) {
+		t.Errorf("other export: err = %v", err)
 	}
 }
 
@@ -267,19 +270,22 @@ func TestLargeVectors(t *testing.T) {
 // bytes: the root's aad, compression and layout are pinned, not only round-tripped.
 func TestRootVector(t *testing.T) {
 	k := testKey(t)
-	sealed, err := os.ReadFile("../backup/testdata/root-v1.bin")
+	sealed, err := os.ReadFile("../backup/testdata/root-v2.bin")
 	if err != nil {
 		t.Fatal(err)
 	}
-	const name = "20261029T120000Z-0011aabb"
-	p, err := k.OpenRoot(name, sealed)
+	const export, name = "data", "20261029T120000Z-0011aabb"
+	p, err := k.OpenRoot(export, name, sealed)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again := k.seal("snapshots/"+name, [nonceSize]byte(sealed[1:1+nonceSize]), p); !bytes.Equal(again, sealed) {
-		t.Errorf("root re-sealed to other bytes (a format version, ADR 0006)")
+	if again := k.seal("snapshots/data/"+name, [nonceSize]byte(sealed[1:1+nonceSize]), p); !bytes.Equal(again, sealed) {
+		t.Errorf("root re-sealed to other bytes (a format version, ADR 0006, 0030)")
 	}
-	if _, err := k.OpenRoot("20261029T120000Z-0011aabc", sealed); !errors.Is(err, ErrCorrupt) {
+	if _, err := k.OpenRoot(export, "20261029T120000Z-0011aabc", sealed); !errors.Is(err, ErrCorrupt) {
 		t.Errorf("other name: err = %v", err)
+	}
+	if _, err := k.OpenRoot("web", name, sealed); !errors.Is(err, ErrCorrupt) {
+		t.Errorf("other export: err = %v", err)
 	}
 }

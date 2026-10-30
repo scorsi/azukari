@@ -106,7 +106,7 @@ func start(t *testing.T) *env {
 	e := &env{bucket: filepath.Join(dir, "b"), tree: filepath.Join(t.TempDir(), "a"), logs: logs}
 	files := ca.SVID(t, nodeA)
 	e.cfg = &config.Backup{Server: "https://" + ln.Addr().String(), Bucket: "backup",
-		DataKeyFile: writeKey(t, keyA), Paths: []string{e.tree}, TLS: config.BackupTLS{TLS: files, ServerID: serverID}}
+		DataKeyFile: writeKey(t, keyA), Exports: map[string]config.Export{"data": {Paths: []string{e.tree}}}, TLS: config.BackupTLS{TLS: files, ServerID: serverID}}
 	nsrc, err := svid.Load(files)
 	if err != nil {
 		t.Fatal(err)
@@ -155,7 +155,7 @@ func (e *env) makeTree(t *testing.T) []byte {
 
 func (e *env) run(t *testing.T) string {
 	t.Helper()
-	name, err := Run(context.Background(), e.cfg, logging.New(e.logs, slog.LevelInfo))
+	name, err := Run(context.Background(), e.cfg, "data", logging.New(e.logs, slog.LevelInfo))
 	if err != nil {
 		t.Fatalf("run: %v\n%s", err, e.logs.b.String())
 	}
@@ -196,7 +196,7 @@ func (e *env) chunk(t *testing.T, id []byte) []byte {
 // snapshot opens the root of name and decodes its metadata stream.
 func (e *env) snapshot(t *testing.T, name string) (*backupv1.Root, []*backupv1.Entry) {
 	t.Helper()
-	plain, err := e.key.OpenRoot(name, e.get(t, "node-a/snapshots/"+name))
+	plain, err := e.key.OpenRoot("data", name, e.get(t, "node-a/snapshots/data/"+name))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func (e *env) snapshot(t *testing.T, name string) (*backupv1.Root, []*backupv1.E
 // refsSet checks refs/<name> is sorted, unique, and returns its chunk keys.
 func (e *env) refsSet(t *testing.T, name string) []string {
 	t.Helper()
-	refs := e.get(t, "node-a/refs/"+name)
+	refs := e.get(t, "node-a/refs/data/"+name)
 	var keys []string
 	for i := 0; i < len(refs); i += 32 {
 		if i > 0 && bytes.Compare(refs[i-32:i], refs[i:i+32]) >= 0 {
@@ -251,7 +251,7 @@ func TestRun(t *testing.T) {
 			chunks = append(chunks, k)
 		}
 	}
-	for _, k := range []string{"node-a/config", "node-a/refs/" + name, "node-a/snapshots/" + name} {
+	for _, k := range []string{"node-a/config", "node-a/refs/data/" + name, "node-a/snapshots/data/" + name} {
 		if !slices.Contains(keys, k) {
 			t.Errorf("%s missing from %v", k, keys)
 		}
@@ -300,7 +300,7 @@ func TestRun(t *testing.T) {
 		t.Error("text.txt content")
 	}
 	tot := root.Totals
-	if root.Format != Format || !slices.Equal(root.Paths, e.cfg.Paths) || tot.Entries != 8 ||
+	if root.Format != Format || !slices.Equal(root.Paths, e.cfg.Exports["data"].Paths) || tot.Entries != 8 ||
 		tot.Bytes != uint64(len(big))+15+7 || tot.Chunks != uint64(len(chunks)) || tot.NewChunks != tot.Chunks ||
 		root.EndTimeNs < root.StartTimeNs {
 		t.Errorf("root = %v", root)
@@ -394,7 +394,7 @@ func TestWrongKey(t *testing.T) {
 	e.run(t)
 	before := len(e.list(t))
 	e.cfg.DataKeyFile = writeKey(t, keyB)
-	_, err := Run(context.Background(), e.cfg, logging.New(e.logs, slog.LevelInfo))
+	_, err := Run(context.Background(), e.cfg, "data", logging.New(e.logs, slog.LevelInfo))
 	if err == nil || !strings.Contains(err.Error(), "wrong data key") {
 		t.Fatalf("err = %v, want wrong data key", err)
 	}
@@ -437,7 +437,7 @@ func TestReadEntryLarge(t *testing.T) {
 // runFails runs once, expects backup-failed naming want and no snapshot root published.
 func (e *env) runFails(t *testing.T, want string) {
 	t.Helper()
-	_, err := Run(context.Background(), e.cfg, logging.New(e.logs, slog.LevelInfo))
+	_, err := Run(context.Background(), e.cfg, "data", logging.New(e.logs, slog.LevelInfo))
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("err = %v, want one naming %q", err, want)
 	}

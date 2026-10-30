@@ -159,18 +159,20 @@ func (k *Key) OpenChunk(id [32]byte, sealed []byte) ([]byte, error) {
 	return p, nil
 }
 
-// SealRoot seals a snapshot root named name (aad "snapshots/<name>") with a random nonce: the
-// caller keeps the result for retries.
-func (k *Key) SealRoot(name string, plaintext []byte) []byte {
+// SealRoot seals the root of export's snapshot name (aad "snapshots/<export>/<name>", ADR
+// 0030) with a random nonce: the caller keeps the result for retries.
+func (k *Key) SealRoot(export, name string, plaintext []byte) []byte {
 	var n [nonceSize]byte
 	rand.Read(n[:]) // never fails since Go 1.24
-	return k.seal("snapshots/"+name, n, plaintext)
+	return k.seal(rootAAD(export, name), n, plaintext)
 }
 
-// OpenRoot opens a snapshot root named name.
-func (k *Key) OpenRoot(name string, sealed []byte) ([]byte, error) {
-	return k.open("snapshots/"+name, sealed)
+// OpenRoot opens the root of export's snapshot name.
+func (k *Key) OpenRoot(export, name string, sealed []byte) ([]byte, error) {
+	return k.open(rootAAD(export, name), sealed)
 }
+
+func rootAAD(export, name string) string { return "snapshots/" + export + "/" + name }
 
 func (k *Key) seal(aad string, nonce [nonceSize]byte, plaintext []byte) []byte {
 	inner := append([]byte{compressNone}, plaintext...)

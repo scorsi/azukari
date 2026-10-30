@@ -1,4 +1,4 @@
-// Package backup is `azukari-backup run` (ADR 0006, 0007): it walks the configured paths,
+// Package backup is `azukari-backup run` (ADR 0006, 0007, 0030): it walks one export's paths,
 // chunks and seals every file and the metadata stream, uploads the chunks the store lacks,
 // then writes the snapshot's refs and root.
 package backup
@@ -36,8 +36,8 @@ import (
 	"github.com/scorsi/azukari/internal/svid"
 )
 
-// Format is Root.format (ADR 0006).
-const Format = 1
+// Format is Root.format (ADR 0006): 2 since one snapshot per export (ADR 0030).
+const Format = 2
 
 // RefsRetries bounds the retries of a refs PUT answered refs-incomplete (ADR 0007).
 const RefsRetries = 3
@@ -69,16 +69,16 @@ var fileReader = func(f *os.File) io.Reader { return f }
 // beforeRead runs before a regular file is opened or a symlink read (test hook: remove it there).
 var beforeRead = func(path string) {}
 
-// Run backs up cfg's paths into a new snapshot, logs backup-completed or backup-failed
-// (ADR 0009) and returns the snapshot's name.
-func Run(ctx context.Context, cfg *config.Backup, log *slog.Logger) (string, error) {
+// Run backs up the paths of cfg's export into a new snapshot of that export (ADR 0030),
+// logs backup-completed or backup-failed (ADR 0009) and returns the snapshot's name.
+func Run(ctx context.Context, cfg *config.Backup, export string, log *slog.Logger) (string, error) {
 	r := &run{log: log, seen: map[[32]byte]struct{}{}, totals: &backupv1.Totals{}, began: time.Now()}
-	name, err := r.run(ctx, cfg)
+	name, err := r.run(ctx, cfg, export)
 	if err != nil {
-		log.Error("", "event", "backup-failed", "err", err)
+		log.Error("", "event", "backup-failed", "export", export, "err", err)
 		return "", err
 	}
-	log.Info("", "event", "backup-completed", "bucket", cfg.Bucket, "snapshot", name,
+	log.Info("", "event", "backup-completed", "bucket", cfg.Bucket, "export", export, "snapshot", name,
 		"entries", r.totals.Entries, "bytes_read", r.totals.Bytes, "bytes_new", r.bytesNew,
 		"chunks_new", r.totals.NewChunks, "dur_us", time.Since(r.began).Microseconds())
 	return name, nil
@@ -124,7 +124,11 @@ func vanished[T any](v T, err error) (T, error) {
 	return v, err
 }
 
-func (r *run) run(ctx context.Context, cfg *config.Backup) (string, error) {
+func (r *run) run(ctx context.Context, cfg *config.Backup, export string) (string, error) {
+	exp, ok := cfg.Exports[export]
+	if !ok {
+		return "", fmt.Errorf("export %q is not in the configuration", export)
+	}
 	node, k, c, err := connect(cfg)
 	if err != nil {
 		return "", err
@@ -152,7 +156,7 @@ func (r *run) run(ctx context.Context, cfg *config.Backup) (string, error) {
 	defer r.meta.Close()
 	r.metaW = bufio.NewWriter(r.meta)
 
-	for _, p := range slices.Sorted(slices.Values(cfg.Paths)) {
+	for _, p := range slices.Sorted(slices.Values(exp.Paths)) {
 		if err := filepath.WalkDir(p, r.visit(ctx, p)); err != nil {
 			return "", err
 		}
@@ -177,26 +181,26 @@ func (r *run) run(ctx context.Context, cfg *config.Backup) (string, error) {
 		refs = append(refs, id[:]...)
 	}
 	beforeRefs()
-	if err := r.putRefs(ctx, node+"/refs/"+name, refs, ids); err != nil {
+	if err := r.putRefs(ctx, node+"/refs/"+export+"/"+name, refs, ids); err != nil {
 		return "", err
 	}
 
 	r.totals.Chunks = uint64(len(ids))
 	root, err := proto.Marshal(&backupv1.Root{
 		Format: Format, StartTimeNs: r.began.UnixNano(), EndTimeNs: time.Now().UnixNano(),
-		Paths: cfg.Paths, MetadataChunks: metaChunks, Totals: r.totals,
+		Paths: exp.Paths, MetadataChunks: metaChunks, Totals: r.totals,
 	})
 	if err != nil {
 		return "", err
 	}
 	// Sealed once with a random nonce: the client's retries send these same bytes.
-	sealed := r.key.SealRoot(name, root)
+	sealed := r.key.SealRoot(export, name, root)
 	if int64(len(sealed)) > maxRoot {
 		return "", fmt.Errorf("root: %d sealed bytes, over the %d a restore reads", len(sealed), maxRoot)
 	}
 	for attempt := 1; ; attempt++ {
 		beforeRoot()
-		_, err := r.put(ctx, node+"/snapshots/"+name, sealed)
+		_, err := r.put(ctx, node+"/snapshots/"+export+"/"+name, sealed)
 		if err == nil {
 			return name, nil
 		}
@@ -207,7 +211,7 @@ func (r *run) run(ctx context.Context, cfg *config.Backup) (string, error) {
 		if err := r.recover(ctx, ids); err != nil {
 			return "", err
 		}
-		if err := r.putRefs(ctx, node+"/refs/"+name, refs, ids); err != nil {
+		if err := r.putRefs(ctx, node+"/refs/"+export+"/"+name, refs, ids); err != nil {
 			return "", err
 		}
 	}

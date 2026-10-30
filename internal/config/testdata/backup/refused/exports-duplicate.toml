@@ -1,0 +1,17 @@
+# want: exports.web.paths[0]: "/var/lib/a" listed twice, in exports.data.paths[0]
+server = "https://store.example.org:8443"
+bucket = "backup"
+data_key_file = "/var/lib/azukari-backup/data.key"
+
+[tls]
+trust_domain = "example.org"
+server_id = "spiffe://example.org/store-host/azukari-server"
+svid_file = "/run/azukari-backup/svid.pem"
+key_file = "/run/azukari-backup/key.pem"
+bundle_file = "/run/azukari-backup/bundle.pem"
+
+[exports.data]
+paths = ["/var/lib/a"]
+
+[exports.web]
+paths = ["/var/lib/a"]

@@ -122,11 +122,11 @@ func TestMetrics(t *testing.T) {
 
 	c := e.client(t, nodeA, true)
 	data := []byte("root")
-	if a := e.do(t, c, "PUT", "/v1/b/backup/o/node-a/refs/s", bytes.NewReader(nil), hexSum(nil)); a.code != http.StatusCreated {
+	if a := e.do(t, c, "PUT", "/v1/b/backup/o/node-a/refs/data/s", bytes.NewReader(nil), hexSum(nil)); a.code != http.StatusCreated {
 		t.Fatalf("refs: %d %q", a.code, a.reason) // a root needs its refs (ADR 0025)
 	}
 	before := time.Now().Unix()
-	if a := e.do(t, c, "PUT", "/v1/b/backup/o/node-a/snapshots/s", bytes.NewReader(data), hexSum(data)); a.code != http.StatusCreated {
+	if a := e.do(t, c, "PUT", "/v1/b/backup/o/node-a/snapshots/data/s", bytes.NewReader(data), hexSum(data)); a.code != http.StatusCreated {
 		t.Fatalf("snapshot: %d %q", a.code, a.reason)
 	}
 	after := time.Now().Unix()

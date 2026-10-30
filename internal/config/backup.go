@@ -3,8 +3,10 @@ package config
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 )
 
@@ -16,9 +18,16 @@ type Backup struct {
 	Bucket string `toml:"bucket"`
 	// DataKeyFile is the node's data key (ADR 0006), not the TLS key.
 	DataKeyFile string `toml:"data_key_file"`
-	// Paths are the trees to back up: absolute, none inside another (ADR 0006).
-	Paths []string  `toml:"paths"`
-	TLS   BackupTLS `toml:"tls"`
+	// Exports are the node's units of backup, each its own snapshots (ADR 0030), by name.
+	Exports map[string]Export `toml:"exports"`
+	TLS     BackupTLS         `toml:"tls"`
+}
+
+// Export is one [exports.<name>] table (ADR 0030).
+type Export struct {
+	// Paths are the trees to back up: absolute, none inside another, across every export
+	// of the file (ADR 0006, 0030).
+	Paths []string `toml:"paths"`
 }
 
 // BackupTLS is the backup side's [tls]: the shared files plus the store's expected ID (ADR 0005).
@@ -74,26 +83,38 @@ func (c *Backup) validate(network bool) error {
 	if !cleanAbsolute(c.DataKeyFile) {
 		add("data_key_file: %q must be a clean absolute path", c.DataKeyFile)
 	}
-	if len(c.Paths) == 0 {
-		add("paths: at least one path required")
+	if len(c.Exports) == 0 {
+		add("exports: at least one export required")
 	}
-	for i, p := range c.Paths {
-		if !cleanAbsolute(p) {
-			add("paths[%d]: %q must be a clean absolute path", i, p)
-			continue
+	type seen struct{ path, at string }
+	var all []seen // every valid path so far, of every export
+	for _, name := range slices.Sorted(maps.Keys(c.Exports)) {
+		if !validSegment(name, keySegmentRE) {
+			add("exports: %q must be a key segment: [A-Za-z0-9._-], not '.' or '..'", name)
 		}
-		if p == "/" { // its entry path would be "", which restore refuses
-			add("paths: \"/\" is not allowed, list the directories to back up")
-			continue
+		paths := c.Exports[name].Paths
+		if len(paths) == 0 {
+			add("exports.%s.paths: at least one path required", name)
 		}
-		for j, o := range c.Paths[:i] {
-			switch {
-			case !cleanAbsolute(o) || o == "/":
-			case p == o:
-				add("paths[%d]: %q listed twice", i, p)
-			case under(p, o) || under(o, p):
-				add("paths[%d]: %q overlaps paths[%d] %q", i, p, j, o)
+		for i, p := range paths {
+			at := fmt.Sprintf("exports.%s.paths[%d]", name, i)
+			if !cleanAbsolute(p) {
+				add("%s: %q must be a clean absolute path", at, p)
+				continue
 			}
+			if p == "/" { // its entry path would be "", which restore refuses
+				add("%s: \"/\" is not allowed, list the directories to back up", at)
+				continue
+			}
+			for _, o := range all {
+				switch {
+				case p == o.path:
+					add("%s: %q listed twice, in %s", at, p, o.at)
+				case under(p, o.path) || under(o.path, p):
+					add("%s: %q overlaps %s %q", at, p, o.at, o.path)
+				}
+			}
+			all = append(all, seen{p, at})
 		}
 	}
 	if network {

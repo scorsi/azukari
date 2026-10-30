@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"slices"
 	"testing"
 )
 
@@ -11,8 +12,11 @@ func TestBackupValid(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := BackupTLS{TLS{"example.org", "/run/azukari-backup/svid.pem", "/run/azukari-backup/key.pem", "/run/azukari-backup/bundle.pem"}, "spiffe://example.org/store-host/azukari-server"}
-	if c.Server != "https://store.example.org:8443" || c.Bucket != "backup" || c.DataKeyFile != "/var/lib/azukari-backup/data.key" || len(c.Paths) != 3 || c.TLS != want {
+	if c.Server != "https://store.example.org:8443" || c.Bucket != "backup" || c.DataKeyFile != "/var/lib/azukari-backup/data.key" || c.TLS != want {
 		t.Fatalf("unexpected decode: %+v", c)
+	}
+	if len(c.Exports) != 2 || len(c.Exports["data"].Paths) != 3 || !slices.Equal(c.Exports["web.1"].Paths, []string{"/srv/www"}) {
+		t.Fatalf("unexpected exports: %+v", c.Exports)
 	}
 }
 
@@ -40,10 +44,10 @@ func TestBackupOffline(t *testing.T) {
 		body string
 		ok   bool
 	}{
-		{"bucket = \"backup\"\ndata_key_file = \"/k\"\npaths = [\"/a\"]\n", true},
-		{"bucket = \"backup\"\ndata_key_file = \"/k\"\npaths = [\"/a\"]\n[tls]\nsvid_file = \"relative\"\n", true},
-		{"bucket = \"Backup\"\ndata_key_file = \"/k\"\npaths = [\"/a\"]\n", false},
-		{"bucket = \"backup\"\ndata_key_file = \"/k\"\npaths = [\"/a\"]\nnode = \"x\"\n", false},
+		{"bucket = \"backup\"\ndata_key_file = \"/k\"\n[exports.a]\npaths = [\"/a\"]\n", true},
+		{"bucket = \"backup\"\ndata_key_file = \"/k\"\n[exports.a]\npaths = [\"/a\"]\n[tls]\nsvid_file = \"relative\"\n", true},
+		{"bucket = \"Backup\"\ndata_key_file = \"/k\"\n[exports.a]\npaths = [\"/a\"]\n", false},
+		{"bucket = \"backup\"\ndata_key_file = \"/k\"\n[exports.a]\npaths = [\"/a\"]\nnode = \"x\"\n", false},
 	} {
 		p := dir + "/c.toml"
 		if err := os.WriteFile(p, []byte(tc.body), 0o600); err != nil {

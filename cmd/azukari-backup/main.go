@@ -14,15 +14,16 @@ import (
 	"github.com/scorsi/azukari/internal/logging"
 )
 
-const usage = `usage: azukari-backup check|run <config.toml>
-       azukari backup snapshots [--from-dir <bucket copy>] <config.toml>
-       azukari backup restore [--verify] [--from-dir <bucket copy>] <config.toml> <snapshot> <target>
+const usage = `usage: azukari-backup check <config.toml>
+       azukari-backup run <config.toml> <export>
+       azukari backup snapshots [--from-dir <bucket copy>] <config.toml> <export>
+       azukari backup restore [--verify] [--from-dir <bucket copy>] <config.toml> <export> <snapshot> <target>
 
 commands:
   check      validate the configuration file and exit (reads no key, SVID nor path)
-  run        back up the configured paths into a new snapshot
-  snapshots  list the node's snapshots, one line each: name, start, end, totals
-  restore    restore a snapshot into target, an empty or absent directory;
+  run        back up the export's paths into a new snapshot of that export
+  snapshots  list the export's snapshots, one line each: name, start, end, totals
+  restore    restore a snapshot of the export into target, an empty or absent directory;
              --verify reads and checks everything and writes nothing
 
 --from-dir reads a copy of the bucket's directory (a replica) instead of the store: no
@@ -52,11 +53,11 @@ func main() {
 	ctx := context.Background()
 	switch call {
 	case "run":
-		_, err = backup.Run(ctx, cfg, log)
+		_, err = backup.Run(ctx, cfg, args[1], log)
 	case "snapshots":
-		err = backup.Snapshots(ctx, cfg, fromDir, os.Stdout, log)
+		err = backup.Snapshots(ctx, cfg, fromDir, args[1], os.Stdout, log)
 	case "restore":
-		err = backup.Restore(ctx, cfg, fromDir, args[1], args[2], verify, log)
+		err = backup.Restore(ctx, cfg, fromDir, args[1], args[2], args[3], verify, log)
 	}
 	if err != nil {
 		os.Exit(1)
@@ -81,7 +82,7 @@ func parseArgs(args []string) (call string, verify bool, fromDir string, rest []
 			break
 		}
 	}
-	want := map[string]int{"check": 1, "run": 1, "snapshots": 1, "restore": 3}[call]
+	want := map[string]int{"check": 1, "run": 2, "snapshots": 2, "restore": 4}[call]
 	// A leading "--" is an unknown, repeated or incomplete option.
 	if want == 0 || len(rest) != want || strings.HasPrefix(rest[0], "--") {
 		return "", false, "", nil, errUsage

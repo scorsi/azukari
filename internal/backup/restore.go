@@ -21,6 +21,7 @@ import (
 	azukariv1 "github.com/scorsi/azukari/gen/azukari/v1"
 	"github.com/scorsi/azukari/internal/config"
 	"github.com/scorsi/azukari/internal/fastcdc"
+	"github.com/scorsi/azukari/internal/key"
 	"github.com/scorsi/azukari/internal/seal"
 )
 
@@ -70,19 +71,22 @@ func source(cfg *config.Backup, fromDir string) (string, *seal.Key, objects, err
 // fsync makes a restored file or directory durable (test hook: fail a sync).
 var fsync = unix.Fsync
 
-// Snapshots writes one line per snapshot of the node to w, in name order:
+// Snapshots writes one line per snapshot of the node's export to w, in name order:
 // "<name> <start> <end> entries=<n> bytes=<n> chunks=<n> new_chunks=<n>", times in RFC 3339
 // UTC with nanoseconds, read from the store or from the bucket copy fromDir when it is not
 // empty. A failure is logged as snapshots-failed.
-func Snapshots(ctx context.Context, cfg *config.Backup, fromDir string, w io.Writer, log *slog.Logger) error {
-	err := snapshots(ctx, cfg, fromDir, w)
+func Snapshots(ctx context.Context, cfg *config.Backup, fromDir, export string, w io.Writer, log *slog.Logger) error {
+	err := snapshots(ctx, cfg, fromDir, export, w)
 	if err != nil {
-		log.Error("", "event", "snapshots-failed", "err", err)
+		log.Error("", "event", "snapshots-failed", "export", export, "err", err)
 	}
 	return err
 }
 
-func snapshots(ctx context.Context, cfg *config.Backup, fromDir string, w io.Writer) error {
+func snapshots(ctx context.Context, cfg *config.Backup, fromDir, export string, w io.Writer) error {
+	if err := checkExport(export); err != nil {
+		return err
+	}
 	node, k, c, err := source(cfg, fromDir)
 	if err != nil {
 		return err
@@ -91,13 +95,13 @@ func snapshots(ctx context.Context, cfg *config.Backup, fromDir string, w io.Wri
 	if err := checkKey(ctx, c, node, k); err != nil {
 		return err
 	}
-	prefix := node + "/snapshots/"
+	prefix := node + "/snapshots/" + export + "/"
 	for o, err := range c.List(ctx, prefix) {
 		if err != nil {
 			return fmt.Errorf("list: %w", err)
 		}
 		name := strings.TrimPrefix(o.Key, prefix)
-		root, err := openRoot(ctx, c, node, k, name)
+		root, err := openRoot(ctx, c, node, k, export, name)
 		if err != nil {
 			return err
 		}
@@ -126,18 +130,27 @@ func checkKey(ctx context.Context, c objects, node string, k *seal.Key) error {
 	return nil
 }
 
-// openRoot fetches, opens (aad snapshots/<name>) and decodes a snapshot root.
-func openRoot(ctx context.Context, c objects, node string, k *seal.Key, name string) (*backupv1.Root, error) {
+// checkExport refuses an export name that is not one key segment (ADR 0015, 0030). An export
+// no longer configured may still be listed and restored: its snapshots stay in the bucket.
+func checkExport(export string) error {
+	if err := key.Check(export); err != nil || strings.Contains(export, "/") {
+		return fmt.Errorf("export %q is not a key segment", export)
+	}
+	return nil
+}
+
+// openRoot fetches, opens (aad snapshots/<export>/<name>) and decodes a snapshot root.
+func openRoot(ctx context.Context, c objects, node string, k *seal.Key, export, name string) (*backupv1.Root, error) {
 	if name == "" || strings.Contains(name, "/") {
 		return nil, fmt.Errorf("snapshot name %q is invalid", name)
 	}
 	ctx, cancel := context.WithTimeout(ctx, RequestTimeout)
 	defer cancel()
-	sealed, err := c.Get(ctx, node+"/snapshots/"+name, maxRoot)
+	sealed, err := c.Get(ctx, node+"/snapshots/"+export+"/"+name, maxRoot)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot %s: %w", name, err)
 	}
-	plain, err := k.OpenRoot(name, sealed)
+	plain, err := k.OpenRoot(export, name, sealed)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot %s: %w", name, err)
 	}
@@ -155,17 +168,17 @@ func openRoot(ctx context.Context, c objects, node string, k *seal.Key, name str
 // object (tag, identifier, aad) and the root's totals; verify does the same and writes
 // nothing. It reads from the store, or from the bucket copy fromDir when it is not empty. It
 // logs restore-completed or restore-failed (ADR 0009).
-func Restore(ctx context.Context, cfg *config.Backup, fromDir, name, target string, verify bool, log *slog.Logger) error {
+func Restore(ctx context.Context, cfg *config.Backup, fromDir, export, name, target string, verify bool, log *slog.Logger) error {
 	began := time.Now()
 	r := &restorer{verify: verify, target: -1, cached: -1, kinds: map[string]bool{},
 		chunks: map[[32]byte]struct{}{}, asRoot: os.Geteuid() == 0}
-	err := r.restore(ctx, cfg, fromDir, name, target)
+	err := r.restore(ctx, cfg, fromDir, export, name, target)
 	r.close()
 	if err != nil {
-		log.Error("", "event", "restore-failed", "snapshot", name, "verify", verify, "err", err)
+		log.Error("", "event", "restore-failed", "export", export, "snapshot", name, "verify", verify, "err", err)
 		return err
 	}
-	log.Info("", "event", "restore-completed", "bucket", cfg.Bucket, "snapshot", name, "verify", verify,
+	log.Info("", "event", "restore-completed", "bucket", cfg.Bucket, "export", export, "snapshot", name, "verify", verify,
 		"owners", r.asRoot && !verify, "entries", r.entries, "bytes", r.bytes, "chunks", len(r.chunks), "dur_us", time.Since(began).Microseconds())
 	return nil
 }
@@ -199,7 +212,10 @@ func (r *restorer) close() {
 	}
 }
 
-func (r *restorer) restore(ctx context.Context, cfg *config.Backup, fromDir, name, target string) error {
+func (r *restorer) restore(ctx context.Context, cfg *config.Backup, fromDir, export, name, target string) error {
+	if err := checkExport(export); err != nil {
+		return err
+	}
 	node, k, c, err := source(cfg, fromDir)
 	if err != nil {
 		return err
@@ -209,7 +225,7 @@ func (r *restorer) restore(ctx context.Context, cfg *config.Backup, fromDir, nam
 	if err := checkKey(ctx, c, node, k); err != nil {
 		return err
 	}
-	root, err := openRoot(ctx, c, node, k, name)
+	root, err := openRoot(ctx, c, node, k, export, name)
 	if err != nil {
 		return err
 	}

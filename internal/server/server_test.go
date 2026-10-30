@@ -701,21 +701,21 @@ func TestRefsAndSnapshot(t *testing.T) {
 		"unsorted":  append(id[:], other[:]...),
 		"duplicate": append(id[:], id[:]...),
 	} {
-		if a := put("refs/s", body); a.code != http.StatusBadRequest || a.reason != "refs-invalid" {
+		if a := put("refs/data/s", body); a.code != http.StatusBadRequest || a.reason != "refs-invalid" {
 			t.Errorf("%s: %d %q", name, a.code, a.reason)
 		}
 	}
-	if a := put("refs/s", id[:]); a.code != http.StatusConflict || a.reason != "refs-incomplete" {
+	if a := put("refs/data/s", id[:]); a.code != http.StatusConflict || a.reason != "refs-incomplete" {
 		t.Fatalf("incomplete: %d %q", a.code, a.reason)
 	}
 	if a := put("chunks/"+h[:2]+"/"+h, []byte("chunk")); a.code != http.StatusCreated {
 		t.Fatalf("chunk: %d %q", a.code, a.reason)
 	}
-	if a := put("refs/s", id[:]); a.code != http.StatusCreated {
+	if a := put("refs/data/s", id[:]); a.code != http.StatusCreated {
 		t.Fatalf("complete: %d %q", a.code, a.reason)
 	}
 	for range 2 { // the retry (200) is not a second snapshot
-		if a := put("snapshots/s", []byte("root")); a.code >= 300 {
+		if a := put("snapshots/data/s", []byte("root")); a.code >= 300 {
 			t.Fatalf("snapshot: %d %q", a.code, a.reason)
 		}
 	}
@@ -725,7 +725,7 @@ func TestRefsAndSnapshot(t *testing.T) {
 			got = append(got, l)
 		}
 	}
-	if len(got) != 1 || got[0]["bucket"] != "backup" || got[0]["namespace"] != "node-a" || got[0]["snapshot"] != "s" || got[0]["level"] != "info" {
+	if len(got) != 1 || got[0]["bucket"] != "backup" || got[0]["namespace"] != "node-a" || got[0]["snapshot"] != "data/s" || got[0]["level"] != "info" {
 		t.Fatalf("snapshot-received lines %v", got)
 	}
 	if s := e.snapshots.String(); s != "backup node-a\n" {

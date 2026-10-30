@@ -258,7 +258,7 @@ func TestReplicateRefused(t *testing.T) {
 		t.Fatalf("%d rsync calls on skipped runs", calls)
 	}
 
-	if err := os.WriteFile(filepath.Join(cp, "FORMAT"), []byte("2\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(cp, "FORMAT"), []byte("1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	e.srv.Replicate(ctx, "backup", r)
@@ -267,7 +267,7 @@ func TestReplicateRefused(t *testing.T) {
 	e.srv.Replicate(ctx, "backup", missing)
 
 	failed := events(t, e, "replication-failed")
-	if len(failed) != 2 || !strings.Contains(failed[0]["err"].(string), `destination FORMAT holds "2\n"`) || failed[0]["exit_code"] != nil {
+	if len(failed) != 2 || !strings.Contains(failed[0]["err"].(string), `destination FORMAT holds "1\n"`) || failed[0]["exit_code"] != nil {
 		t.Fatalf("FORMAT mismatch: %v", failed)
 	}
 	if failed[1]["exit_code"] != 23.0 || !strings.Contains(failed[1]["err"].(string), "rsync check") {

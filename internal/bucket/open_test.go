@@ -13,7 +13,7 @@ func notMounted(string) (bool, error) { return false, nil }
 
 func checkLayout(t *testing.T, path string) {
 	t.Helper()
-	if data, err := os.ReadFile(filepath.Join(path, "FORMAT")); err != nil || string(data) != "1\n" {
+	if data, err := os.ReadFile(filepath.Join(path, "FORMAT")); err != nil || string(data) != "2\n" {
 		t.Fatalf("FORMAT: %q, %v", data, err)
 	}
 	for _, d := range []string{"objects", "tmp"} {
@@ -63,7 +63,7 @@ func TestOpenFormatOnly(t *testing.T) {
 	mp := t.TempDir()
 	path := filepath.Join(mp, "backup")
 	must(t, os.Mkdir(path, 0o700))
-	must(t, os.WriteFile(filepath.Join(path, "FORMAT"), []byte("1\n"), 0o600))
+	must(t, os.WriteFile(filepath.Join(path, "FORMAT"), []byte(FormatContent), 0o600))
 	if s, err := Open(path, mp, notMounted); s != Available || err != nil {
 		t.Fatalf("Open = %v, %v", s, err)
 	}
@@ -104,10 +104,10 @@ func TestOpenUnavailable(t *testing.T) {
 			must(t, os.Mkdir(filepath.Join(p, "tmp"), 0o700))
 			return p, mp
 		}, mounted, "never adopted"},
-		"bad FORMAT": {func(t *testing.T, mp string) (string, string) {
+		"version 1 FORMAT": {func(t *testing.T, mp string) (string, string) {
 			p := filepath.Join(mp, "backup")
 			must(t, os.Mkdir(p, 0o700))
-			must(t, os.WriteFile(filepath.Join(p, "FORMAT"), []byte("2\n"), 0o600))
+			must(t, os.WriteFile(filepath.Join(p, "FORMAT"), []byte("1\n"), 0o600))
 			return p, mp
 		}, mounted, "FORMAT holds"},
 		"path is a file": {func(t *testing.T, mp string) (string, string) {

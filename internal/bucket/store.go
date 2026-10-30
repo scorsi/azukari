@@ -489,33 +489,37 @@ func (b *Bucket) List(prefix, startAfter string, limit int) (objs []Object, next
 	return objs, next, nil
 }
 
-// LastSnapshot is the receive time of namespace's newest snapshots/* object, false when it
-// has none: read once at start for azukari_last_snapshot_timestamp_seconds (ADR 0009).
+// LastSnapshot is the receive time of namespace's newest root (snapshots/<export>/<name>,
+// ADR 0030), false when it has none: read once at start for
+// azukari_last_snapshot_timestamp_seconds (ADR 0009).
+// shortcut: newest over every export of the namespace; X2 (M6) makes it per export.
 func (b *Bucket) LastSnapshot(namespace string) (time.Time, bool, error) {
 	if err := checkNamespace(namespace); err != nil {
 		return time.Time{}, false, err
 	}
 	dir := filepath.Join(b.path, "objects", namespace, "snapshots")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if errors.Is(notFound(err), ErrNotFound) {
-			return time.Time{}, false, nil
-		}
-		return time.Time{}, false, err
-	}
 	var newest int64
 	found := false
-	for _, e := range entries {
-		if !e.Type().IsRegular() {
-			continue
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		switch {
+		case p == dir && errors.Is(notFound(err), ErrNotFound):
+			return fs.SkipAll
+		case err != nil:
+			return err
+		case !d.Type().IsRegular():
+			return nil
 		}
-		h, err := readHeader(filepath.Join(dir, e.Name()))
+		h, err := readHeader(p)
 		if err != nil {
-			return time.Time{}, false, err
+			return err
 		}
 		if !found || h.ReceiveTime > newest {
 			newest, found = h.ReceiveTime, true
 		}
+		return nil
+	})
+	if err != nil {
+		return time.Time{}, false, err
 	}
 	if !found {
 		return time.Time{}, false, nil

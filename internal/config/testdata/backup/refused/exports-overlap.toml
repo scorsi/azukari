@@ -1,4 +1,4 @@
-# want: paths: at least one path required
+# want: exports.web.paths[0]: "/var/lib/a/www" overlaps exports.data.paths[0] "/var/lib/a"
 server = "https://store.example.org:8443"
 bucket = "backup"
 data_key_file = "/var/lib/azukari-backup/data.key"
@@ -9,3 +9,9 @@ server_id = "spiffe://example.org/store-host/azukari-server"
 svid_file = "/run/azukari-backup/svid.pem"
 key_file = "/run/azukari-backup/key.pem"
 bundle_file = "/run/azukari-backup/bundle.pem"
+
+[exports.data]
+paths = ["/var/lib/a"]
+
+[exports.web]
+paths = ["/var/lib/a/www"]

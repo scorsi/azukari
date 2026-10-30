@@ -21,8 +21,8 @@ When the store is gone, a node restores from a copy of the bucket's directory (a
 or the bucket's disk mounted elsewhere) with only its configuration file and data key:
 
 ```
-azukari backup snapshots --from-dir /mnt/replica/backup /etc/azukari/azukari-backup.toml
-azukari backup restore [--verify] --from-dir /mnt/replica/backup /etc/azukari/azukari-backup.toml <snapshot> <empty target>
+azukari backup snapshots --from-dir /mnt/replica/backup /etc/azukari/azukari-backup.toml <export>
+azukari backup restore [--verify] --from-dir /mnt/replica/backup /etc/azukari/azukari-backup.toml <export> <snapshot> <empty target>
 ```
 
 `--from-dir` names the directory holding `FORMAT` and `objects/`. No network, no SVID:
