@@ -169,6 +169,15 @@ func (c *Server) validate() error {
 		}
 		replicas[r.Name] = true
 		r.validate(at, add)
+		// A dir replica writes and deletes under <destination>/<bucket>/ (ADR 0008): never in a
+		// live bucket. Every such path is under destination, so destination alone is checked.
+		if r.Kind == "dir" && cleanAbsolute(r.Destination) {
+			for _, b := range c.Buckets {
+				if cleanAbsolute(b.Path) && Overlap(r.Destination, b.Path) {
+					add("%s: destination %q overlaps bucket %q's path %q", at, r.Destination, b.Name, b.Path)
+				}
+			}
+		}
 	}
 
 	for name, cl := range c.Classes {
@@ -206,7 +215,7 @@ func (c *Server) validate() error {
 		b.validate(at, c.TLS.TrustDomain, c.Classes, add)
 		// A bucket's directory is its whole truth (ADR 0004): two buckets never share one.
 		for _, o := range c.Buckets[:i] {
-			if cleanAbsolute(b.Path) && cleanAbsolute(o.Path) && (under(b.Path, o.Path) || under(o.Path, b.Path) || b.Path == o.Path) {
+			if cleanAbsolute(b.Path) && cleanAbsolute(o.Path) && Overlap(b.Path, o.Path) {
 				add("%s: path %q overlaps bucket %q's path %q", at, b.Path, o.Name, o.Path)
 			}
 		}
@@ -403,6 +412,11 @@ func validListen(s string, loopback bool) bool {
 
 func cleanAbsolute(s string) bool {
 	return filepath.IsAbs(s) && filepath.Clean(s) == s && !strings.ContainsAny(s, "\x00\n\r")
+}
+
+// Overlap: clean absolute paths a and b are equal or one is inside the other.
+func Overlap(a, b string) bool {
+	return a == b || under(a, b) || under(b, a)
 }
 
 // under: p is strictly inside dir (both clean absolute paths).

@@ -13,8 +13,10 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/scorsi/azukari/internal/bucket"
 	"github.com/scorsi/azukari/internal/config"
 )
 
@@ -42,6 +44,18 @@ import (
 // contents nor times) and --stats --no-human-readable (counts parsed from its output). rsync
 // writes each file under a temporary name and renames it when complete (its default, never
 // --inplace): a cut run leaves only complete objects. Kind ssh adds -e with sshCommand.
+//
+// Durability, so a power cut on the target never keeps a later phase's work without an
+// earlier one's: every call adds --fsync (the receiver fsyncs each file it writes). For kind
+// dir, after each of steps 1 to 4 the store fsyncs D/ and every directory under D/B/, so the
+// names that phase created or removed are durable before the next phase starts. For kind ssh
+// the receiver's --fsync is all there is: the remote may be a restricted shell that runs
+// nothing but rsync, so directory entries there are as durable as its filesystem makes them.
+//
+// Stalls: every call adds --timeout=rsyncTimeout (rsync exits when no data moves that long)
+// and sshCommand bounds the connection and checks the peer is alive. rsync runs in its own
+// process group: on cancellation the whole group (rsync and its ssh) is killed and reaped,
+// and the run ends, releasing served.run.
 
 // Results of a run: replication-completed or replication-failed (ADR 0009), a skipped run
 // logs replication-skipped; azukari_replication_runs_total's result is the event's suffix.
@@ -57,6 +71,9 @@ type runKey struct{ bucket, replica, result string }
 
 // copied sums rsync's --stats over a run's calls.
 type copied struct{ files, bytes, deletions int64 }
+
+// rsyncTimeout is rsync's --timeout in seconds: a transfer idle that long fails the run.
+const rsyncTimeout = 600
 
 var statsRE = regexp.MustCompile(`(?m)^(Number of regular files transferred|Total transferred file size|Number of deleted files): ([0-9]+)`)
 
@@ -82,7 +99,7 @@ func (s *Server) scheduleReplica(ctx context.Context, name string, r config.Repl
 // logs and counts the outcome. The caller runs one at a time per bucket and replica.
 func (s *Server) Replicate(ctx context.Context, name string, r config.Replica) {
 	sb := s.buckets[name]
-	if reason := s.replicaGuard(sb, r); reason != "" {
+	if reason := s.replicaGuard(name, sb, r); reason != "" {
 		s.log.Warn("", "event", "replication-skipped", "bucket", name, "replica", r.Name, "reason", reason)
 		s.countReplication(name, r.Name, replicationSkipped)
 		return
@@ -108,7 +125,7 @@ func (s *Server) Replicate(ctx context.Context, name string, r config.Replica) {
 
 // replicaGuard returns why a run must not start (ADR 0008), or "" with sb.run read-locked:
 // retention takes it for writing, so neither starts while the other runs.
-func (s *Server) replicaGuard(sb *served, r config.Replica) string {
+func (s *Server) replicaGuard(name string, sb *served, r config.Replica) string {
 	if sb.b == nil || sb.b.Err() != nil {
 		return "bucket unavailable"
 	}
@@ -118,9 +135,36 @@ func (s *Server) replicaGuard(sb *served, r config.Replica) string {
 		} else if !ok {
 			return fmt.Sprintf("mount_point %s is not a mount point", r.MountPoint)
 		}
+		if reason := s.replicaOverlap(name, r); reason != "" {
+			return reason
+		}
 	}
 	if !sb.run.TryRLock() {
 		return "retention running"
+	}
+	return ""
+}
+
+// replicaOverlap is the configuration's check (config.Overlap) on resolved paths: a dir
+// replica's destination, or its copy of bucket name, that a symlink leads into a bucket (or
+// around one) is never written.
+func (s *Server) replicaOverlap(name string, r config.Replica) string {
+	for _, d := range []string{r.Destination, filepath.Join(r.Destination, name)} {
+		dst, err := filepath.EvalSymlinks(d)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue // rsync creates D/B as a directory, or fails on a missing D
+		} else if err != nil {
+			return fmt.Sprintf("destination %s: %v", d, err)
+		}
+		for b, sb := range s.buckets {
+			p, err := filepath.EvalSymlinks(sb.path)
+			if err != nil {
+				p = sb.path // absent (an unavailable bucket): as configured
+			}
+			if config.Overlap(dst, p) {
+				return fmt.Sprintf("destination %s resolves to %s, overlapping bucket %s's path %s", d, dst, b, p)
+			}
+		}
 	}
 	return ""
 }
@@ -174,8 +218,28 @@ func (s *Server) replicate(ctx context.Context, name string, sb *served, r confi
 		if code, err := s.rsync(ctx, r, st.stdin, c, st.phase, append(st.args, src, dst)...); err != nil {
 			return code, err
 		}
+		if r.Kind == "dir" {
+			if err := syncDirs(filepath.Join(r.Destination, name)); err != nil {
+				return 0, fmt.Errorf("sync %s: %w", st.phase, err)
+			}
+		}
 	}
 	return 0, nil
+}
+
+// syncDirs fsyncs dir's parent and every directory under dir.
+// shortcut: syncs every directory of the copy, not only those a phase touched; list them
+// from rsync's --itemize-changes if a large copy makes this slow.
+func syncDirs(dir string) error {
+	if err := bucket.SyncDir(filepath.Dir(dir)); err != nil {
+		return err
+	}
+	return filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || !d.IsDir() {
+			return err
+		}
+		return bucket.SyncDir(p)
+	})
 }
 
 // listRoots lists every snapshot root, one path relative to the bucket per line.
@@ -215,15 +279,21 @@ func (s *Server) rsync(ctx context.Context, r config.Replica, stdin io.Reader, c
 	if s.onPhase != nil {
 		s.onPhase(phase)
 	}
-	args = append([]string{"--size-only", "--stats", "--no-human-readable"}, args...)
+	args = append([]string{"--size-only", "--fsync", "--timeout=" + strconv.Itoa(rsyncTimeout), "--stats", "--no-human-readable"}, args...)
 	if r.Kind == "ssh" {
 		args = append([]string{"-e", sshCommand(r)}, args...)
 	}
 	cmd := exec.CommandContext(ctx, "rsync", args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = 10 * time.Second // a straggler holding rsync's pipes never blocks Wait
 	var out bytes.Buffer
 	errs := &tail{}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, &out, errs
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return 0, fmt.Errorf("rsync %s: %w", phase, ctx.Err())
+		}
 		var ee *exec.ExitError
 		if !errors.As(err, &ee) {
 			return 0, fmt.Errorf("rsync %s: %w", phase, err)
@@ -248,14 +318,16 @@ func (s *Server) rsync(ctx context.Context, r config.Replica, stdin io.Reader, c
 }
 
 // sshCommand is rsync's -e for kind ssh: the replica's key only, no agent, no user nor system
-// configuration, the target's host key pinned by its known_hosts_file, never asking anything.
+// configuration, the target's host key pinned by its known_hosts_file, never asking anything;
+// connecting fails after 30 s, a peer silent for 2 minutes ends the connection.
 // shortcut: rsync splits -e on spaces and honours quotes, so a key or known_hosts path holding
 // a single quote breaks it; refuse such paths in the configuration if one ever needs it.
 func sshCommand(r config.Replica) string {
 	return strings.Join([]string{"ssh", "-F", "/dev/null", "-p", strconv.Itoa(r.Port), "-i", "'" + r.SSHKeyFile + "'",
 		"-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-o", "BatchMode=yes",
 		"-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile='" + r.KnownHostsFile + "'",
-		"-o", "GlobalKnownHostsFile=/dev/null", "-o", "UpdateHostKeys=no"}, " ")
+		"-o", "GlobalKnownHostsFile=/dev/null", "-o", "UpdateHostKeys=no",
+		"-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=4"}, " ")
 }
 
 // tail keeps the last 4 KiB written: rsync may print one line per file it fails on.

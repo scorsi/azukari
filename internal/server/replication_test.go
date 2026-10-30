@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -252,8 +254,179 @@ func TestReplicateRefused(t *testing.T) {
 func TestSSHCommand(t *testing.T) {
 	got := sshCommand(config.Replica{Kind: "ssh", Port: 2222, SSHKeyFile: "/k", KnownHostsFile: "/kh"})
 	want := "ssh -F /dev/null -p 2222 -i '/k' -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes" +
-		" -o StrictHostKeyChecking=yes -o UserKnownHostsFile='/kh' -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no"
+		" -o StrictHostKeyChecking=yes -o UserKnownHostsFile='/kh' -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no" +
+		" -o ConnectTimeout=30 -o ServerAliveInterval=30 -o ServerAliveCountMax=4"
 	if got != want {
 		t.Fatalf("sshCommand = %q", got)
+	}
+}
+
+// A dir replica that symlinks lead into a bucket, or around one, is skipped untouched.
+func TestReplicateOverlap(t *testing.T) {
+	e := start(t)
+	r := localReplica(t)
+	bkt := e.cfg.Buckets[0].Path
+	around := r
+	around.Destination = filepath.Join(r.MountPoint, "link")
+	for _, l := range [][2]string{
+		{bkt, filepath.Join(r.Destination, "backup")},             // the copy is the bucket
+		{filepath.Dir(e.cfg.Buckets[2].Path), around.Destination}, // the destination holds bucket full
+	} {
+		if err := os.Symlink(l[0], l[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot(t, e, "s1", "c1")
+	e.srv.onPhase = func(p string) { t.Errorf("rsync %s ran", p) }
+	e.srv.Replicate(context.Background(), "backup", r)
+	e.srv.Replicate(context.Background(), "backup", around)
+	l := events(t, e, "replication-skipped")
+	if len(l) != 2 || !strings.Contains(l[0]["reason"].(string), "overlapping bucket backup's path") ||
+		!strings.Contains(l[1]["reason"].(string), "overlapping bucket full's path") {
+		t.Fatalf("replication-skipped: %v", l)
+	}
+}
+
+// Cancelling a run kills rsync and whatever it started, reaps it and releases the bucket.
+func TestReplicateCancel(t *testing.T) {
+	e := start(t)
+	r := localReplica(t)
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	pid := filepath.Join(bin, "pid")
+	// The child sleep keeps rsync's stdout open: only killing the group ends it before WaitDelay.
+	script := fmt.Sprintf("#!/bin/sh\necho $$ > %s\n%s 600\n", pid, sleep)
+	if err := os.WriteFile(filepath.Join(bin, "rsync"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { e.srv.Replicate(ctx, "backup", r); close(done) }()
+	var child int
+	for i := 0; ; i++ {
+		b, _ := os.ReadFile(pid)
+		if _, err := fmt.Sscan(string(b), &child); err == nil {
+			break
+		}
+		if i == 500 {
+			t.Fatal("the fake rsync never started")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the run outlived its cancellation")
+	}
+	if err := syscall.Kill(child, 0); err != syscall.ESRCH {
+		t.Fatalf("rsync %d not reaped: %v", child, err)
+	}
+	sb := e.srv.buckets["backup"]
+	if !sb.run.TryLock() {
+		t.Fatal("bucket lock still held")
+	}
+	sb.run.Unlock()
+	if f := events(t, e, "replication-failed"); len(f) != 1 || !strings.Contains(f[0]["err"].(string), "rsync check: context canceled") {
+		t.Fatalf("replication-failed: %v", f)
+	}
+}
+
+// A run cut in its object phase or in any deletion phase stops there: later phases do not
+// run, every root on the copy keeps its refs and chunks, the next run converges and retention
+// takes the lock afterwards. Real rsync fails: on an unreadable object, or after its first
+// deletion through a wrapper adding --max-delete=1 to the phase under test.
+func TestReplicateInterrupted(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("file permissions do not stop root")
+	}
+	real, err := exec.LookPath("rsync")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "rsync"), []byte("#!/bin/sh\nexec "+real+" $AZUKARI_TEST_RSYNC \"$@\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("AZUKARI_TEST_RSYNC", "")
+
+	e := start(t)
+	r := localReplica(t)
+	ctx := context.Background()
+	bkt, cp := e.cfg.Buckets[0].Path, filepath.Join(r.Destination, "backup")
+	type snap struct{ c, refs, root string }
+	var snaps []snap
+	for _, n := range []string{"s1", "s2", "s3"} {
+		c, refs, root := snapshot(t, e, n, "c"+n)
+		snaps = append(snaps, snap{c, refs, root})
+	}
+	var phases []string
+	sb := e.srv.buckets["backup"]
+	// cut runs one replication failing in phase at, and checks what the copy kept.
+	cut := func(at string) {
+		t.Helper()
+		phases = nil
+		e.srv.Replicate(ctx, "backup", r)
+		f := events(t, e, "replication-failed")
+		if len(f) == 0 || !strings.Contains(f[len(f)-1]["err"].(string), "rsync "+at+": ") || phases[len(phases)-1] != at {
+			t.Fatalf("cut in %s: phases %v, failed %v", at, phases, f)
+		}
+		for _, s := range snaps {
+			if has(t, cp, s.root) && (!has(t, cp, s.refs) || !has(t, cp, s.c)) {
+				t.Fatalf("cut in %s: root %s without its refs or chunk: %v", at, s.root, tree(t, cp))
+			}
+		}
+		if !sb.run.TryLock() {
+			t.Fatalf("cut in %s: bucket lock still held", at)
+		}
+		sb.run.Unlock()
+	}
+
+	// Object phase: s1's chunk unreadable, other objects copied, no root.
+	e.srv.onPhase = func(p string) { phases = append(phases, p) }
+	chunk := filepath.Join(bkt, "objects", snaps[0].c)
+	if err := os.Chmod(chunk, 0); err != nil {
+		t.Fatal(err)
+	}
+	cut("objects")
+	if err := os.Chmod(chunk, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if has(t, cp, snaps[0].c) || !has(t, cp, snaps[1].c) || has(t, cp, snaps[2].root) {
+		t.Fatalf("after the cut object phase: %v", tree(t, cp))
+	}
+	e.srv.Replicate(ctx, "backup", r)
+	sameTree(t, bkt, cp)
+
+	// s1 and s2 pruned (s3 is the newest): each deletion phase in turn stops after one deletion.
+	later := time.Now().Add(30 * day)
+	e.srv.now = func() time.Time { return later }
+	sb.ret.Enabled = true
+	if p, err := e.srv.RunRetention("backup", false); err != nil || p.Snapshots != 2 || p.Chunks != 2 {
+		t.Fatalf("prune: %+v, %v", p, err)
+	}
+	for _, at := range []string{"delete-snapshots", "delete-refs", "delete-chunks"} {
+		e.srv.onPhase = func(p string) {
+			phases = append(phases, p)
+			v := ""
+			if p == at {
+				v = "--max-delete=1"
+			}
+			os.Setenv("AZUKARI_TEST_RSYNC", v)
+		}
+		cut(at)
+	}
+	if has(t, cp, snaps[0].root) || has(t, cp, snaps[1].root) || !has(t, cp, snaps[0].c) && !has(t, cp, snaps[1].c) {
+		t.Fatalf("after the cut runs: %v", tree(t, cp))
+	}
+	e.srv.Replicate(ctx, "backup", r)
+	sameTree(t, bkt, cp)
+	if p, err := e.srv.RunRetention("backup", false); err != nil || p.Snapshots != 0 {
+		t.Fatalf("retention after the runs: %+v, %v", p, err)
 	}
 }

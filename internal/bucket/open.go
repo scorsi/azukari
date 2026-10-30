@@ -170,6 +170,9 @@ func mkdirAllSync(dir string) error {
 	return syncDir(parent)
 }
 
+// SyncDir fsyncs directory dir: its entries become durable.
+func SyncDir(dir string) error { return syncDir(dir) }
+
 func syncDir(dir string) error {
 	f, err := os.Open(dir)
 	if err != nil {
