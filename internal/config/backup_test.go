@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 func TestBackupValid(t *testing.T) {
 	c, err := LoadBackup("testdata/backup/valid.toml")
@@ -26,6 +29,31 @@ func TestValidServerURL(t *testing.T) {
 	for _, s := range []string{"", "https://:8443", "https://store.example.org:65536", "https://store.example.org:8443?x", "https://store.example.org:8443#f", "HTTPS://store.example.org:8443", "https:store.example.org:8443"} {
 		if validServerURL(s) {
 			t.Errorf("%q accepted", s)
+		}
+	}
+}
+
+// A restore from a copy needs neither server nor [tls]; everything else is still checked.
+func TestBackupOffline(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		body string
+		ok   bool
+	}{
+		{"bucket = \"backup\"\ndata_key_file = \"/k\"\npaths = [\"/a\"]\n", true},
+		{"bucket = \"backup\"\ndata_key_file = \"/k\"\npaths = [\"/a\"]\n[tls]\nsvid_file = \"relative\"\n", true},
+		{"bucket = \"Backup\"\ndata_key_file = \"/k\"\npaths = [\"/a\"]\n", false},
+		{"bucket = \"backup\"\ndata_key_file = \"/k\"\npaths = [\"/a\"]\nnode = \"x\"\n", false},
+	} {
+		p := dir + "/c.toml"
+		if err := os.WriteFile(p, []byte(tc.body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadBackupOffline(p); (err == nil) != tc.ok {
+			t.Errorf("%q: %v", tc.body, err)
+		}
+		if _, err := LoadBackup(p); err == nil {
+			t.Errorf("%q accepted by LoadBackup", tc.body)
 		}
 	}
 }

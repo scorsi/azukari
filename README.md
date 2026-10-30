@@ -14,6 +14,22 @@
   restores.
 - `azukari`: the operator command line (administration through the store's local socket).
 
+## Restore without the store
+
+When the store is gone, a node restores from a copy of the bucket's directory (a replica,
+or the bucket's disk mounted elsewhere) with only its configuration file and data key:
+
+```
+azukari-backup snapshots --from-dir /mnt/replica/backup /etc/azukari/azukari-backup.toml
+azukari-backup restore [--verify] --from-dir /mnt/replica/backup /etc/azukari/azukari-backup.toml <snapshot> <empty target>
+```
+
+`--from-dir` names the directory holding `FORMAT` and `objects/`. No network, no SVID:
+`server` and `[tls]` are not read and may be absent. The node's namespace is the one whose
+`config` matches the data key. Every object is checked against its header and decrypted as
+from the store; symlinks in the copy are refused, rsync's temporary `.name.XXXXXX` files and
+`tmp/` are ignored.
+
 ## Not its job
 
 The live data of services, S3 compatibility, package registries ([oroshi](../oroshi)),

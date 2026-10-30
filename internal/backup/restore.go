@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"log/slog"
 	"os"
 	"path"
@@ -17,6 +18,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	backupv1 "github.com/scorsi/azukari/gen/azukari/backup/v1"
+	azukariv1 "github.com/scorsi/azukari/gen/azukari/v1"
 	"github.com/scorsi/azukari/internal/config"
 	"github.com/scorsi/azukari/internal/fastcdc"
 	"github.com/scorsi/azukari/internal/seal"
@@ -31,10 +33,38 @@ const (
 // maxRoot also bounds the root a run publishes. A variable so tests can shrink it.
 var maxRoot int64 = 16 << 20 // 34 bytes per metadata chunk: ~490 000 chunks, ~0.5 TiB of metadata
 
-// objects is where a restore reads the node's objects from: the store's client, or (M5) a
-// directory holding a copy of the bucket.
+// objects is where snapshots and restore read the node's objects from: the store's client,
+// or a directory holding a copy of the bucket (copyDir).
 type objects interface {
 	Get(ctx context.Context, key string, max int64) ([]byte, error)
+	List(ctx context.Context, prefix string) iter.Seq2[*azukariv1.Object, error]
+	Close()
+}
+
+// source opens the store, or the bucket copy fromDir when it is not empty: then neither the
+// SVID nor the network is used, and the namespace is the one holding this data key's config.
+func source(cfg *config.Backup, fromDir string) (string, *seal.Key, objects, error) {
+	if fromDir == "" {
+		node, k, c, err := connect(cfg)
+		if err != nil {
+			return "", nil, nil, err
+		}
+		return node, k, c, nil
+	}
+	k, err := seal.LoadKey(cfg.DataKeyFile)
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("data_key_file: %w", err)
+	}
+	d, err := openCopy(fromDir)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	node, err := d.namespace(k)
+	if err != nil {
+		d.Close()
+		return "", nil, nil, err
+	}
+	return node, k, d, nil
 }
 
 // fsync makes a restored file or directory durable (test hook: fail a sync).
@@ -42,17 +72,18 @@ var fsync = unix.Fsync
 
 // Snapshots writes one line per snapshot of the node to w, in name order:
 // "<name> <start> <end> entries=<n> bytes=<n> chunks=<n> new_chunks=<n>", times in RFC 3339
-// UTC with nanoseconds. A failure is logged as snapshots-failed.
-func Snapshots(ctx context.Context, cfg *config.Backup, w io.Writer, log *slog.Logger) error {
-	err := snapshots(ctx, cfg, w)
+// UTC with nanoseconds, read from the store or from the bucket copy fromDir when it is not
+// empty. A failure is logged as snapshots-failed.
+func Snapshots(ctx context.Context, cfg *config.Backup, fromDir string, w io.Writer, log *slog.Logger) error {
+	err := snapshots(ctx, cfg, fromDir, w)
 	if err != nil {
 		log.Error("", "event", "snapshots-failed", "err", err)
 	}
 	return err
 }
 
-func snapshots(ctx context.Context, cfg *config.Backup, w io.Writer) error {
-	node, k, c, err := connect(cfg)
+func snapshots(ctx context.Context, cfg *config.Backup, fromDir string, w io.Writer) error {
+	node, k, c, err := source(cfg, fromDir)
 	if err != nil {
 		return err
 	}
@@ -122,12 +153,13 @@ func openRoot(ctx context.Context, c objects, node string, k *seal.Key, name str
 
 // Restore writes snapshot name into target, an empty or absent directory, checking every
 // object (tag, identifier, aad) and the root's totals; verify does the same and writes
-// nothing. It logs restore-completed or restore-failed (ADR 0009).
-func Restore(ctx context.Context, cfg *config.Backup, name, target string, verify bool, log *slog.Logger) error {
+// nothing. It reads from the store, or from the bucket copy fromDir when it is not empty. It
+// logs restore-completed or restore-failed (ADR 0009).
+func Restore(ctx context.Context, cfg *config.Backup, fromDir, name, target string, verify bool, log *slog.Logger) error {
 	began := time.Now()
 	r := &restorer{verify: verify, target: -1, cached: -1, kinds: map[string]bool{},
 		chunks: map[[32]byte]struct{}{}, asRoot: os.Geteuid() == 0}
-	err := r.restore(ctx, cfg, name, target)
+	err := r.restore(ctx, cfg, fromDir, name, target)
 	r.close()
 	if err != nil {
 		log.Error("", "event", "restore-failed", "snapshot", name, "verify", verify, "err", err)
@@ -167,8 +199,8 @@ func (r *restorer) close() {
 	}
 }
 
-func (r *restorer) restore(ctx context.Context, cfg *config.Backup, name, target string) error {
-	node, k, c, err := connect(cfg)
+func (r *restorer) restore(ctx context.Context, cfg *config.Backup, fromDir, name, target string) error {
+	node, k, c, err := source(cfg, fromDir)
 	if err != nil {
 		return err
 	}

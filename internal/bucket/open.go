@@ -12,8 +12,8 @@ import (
 	"syscall"
 )
 
-// formatContent is FORMAT's whole content: layout version 1 (ADR 0004).
-const formatContent = "1\n"
+// FormatContent is FORMAT's whole content: layout version 1 (ADR 0004).
+const FormatContent = "1\n"
 
 // State is a bucket's state after Open.
 type State int
@@ -36,7 +36,7 @@ func (s State) String() string {
 // the reason the caller logs. isMount is IsMountPoint outside unit tests.
 func Open(path, mountPoint string, isMount func(string) (bool, error)) (State, error) {
 	switch data, err := os.ReadFile(filepath.Join(path, "FORMAT")); {
-	case err == nil && string(data) == formatContent:
+	case err == nil && string(data) == FormatContent:
 		// A creation interrupted after FORMAT may have left objects/ or tmp/ missing.
 		if err := makeSubdirs(path); err != nil {
 			return Unavailable, err
@@ -46,7 +46,7 @@ func Open(path, mountPoint string, isMount func(string) (bool, error)) (State, e
 		}
 		return Available, nil
 	case err == nil:
-		return Unavailable, fmt.Errorf("%s/FORMAT holds %q, want %q", path, data, formatContent)
+		return Unavailable, fmt.Errorf("%s/FORMAT holds %q, want %q", path, data, FormatContent)
 	case !errors.Is(err, fs.ErrNotExist):
 		return Unavailable, err
 	}
@@ -126,7 +126,7 @@ func create(path string) error {
 	if err != nil {
 		return err
 	}
-	_, err = f.WriteString(formatContent)
+	_, err = f.WriteString(FormatContent)
 	if err == nil {
 		err = f.Sync()
 	}

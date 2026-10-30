@@ -36,20 +36,36 @@ func LoadBackup(path string) (*Backup, error) {
 	return ParseBackup(data)
 }
 
+// LoadBackupOffline reads a backup file for a restore from a bucket copy (ADR 0006): the
+// store is never reached, so server and [tls] are neither required nor checked (on a fresh
+// host the table may be absent or name missing files). Unknown keys are still errors.
+func LoadBackupOffline(path string) (*Backup, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	c := &Backup{}
+	if err := decode(data, c); err != nil {
+		return nil, err
+	}
+	return c, c.validate(false)
+}
+
 // ParseBackup decodes TOML (unknown keys are errors) and validates; it reads no file.
 func ParseBackup(data []byte) (*Backup, error) {
 	c := &Backup{}
 	if err := decode(data, c); err != nil {
 		return nil, err
 	}
-	return c, c.validate()
+	return c, c.validate(true)
 }
 
-func (c *Backup) validate() error {
+// validate checks the file; network adds server and [tls], which only the store needs.
+func (c *Backup) validate(network bool) error {
 	var errs []error
 	add := func(format string, a ...any) { errs = append(errs, fmt.Errorf(format, a...)) }
 
-	if !validServerURL(c.Server) {
+	if network && !validServerURL(c.Server) {
 		add("server: %q must be https://<host>:<port>, port 1..65535, no path", c.Server)
 	}
 	if !nameRE.MatchString(c.Bucket) {
@@ -80,9 +96,11 @@ func (c *Backup) validate() error {
 			}
 		}
 	}
-	c.TLS.validate(add)
-	if _, err := CheckID(c.TLS.ServerID, c.TLS.TrustDomain); err != nil {
-		add("tls.server_id: %q %v", c.TLS.ServerID, err)
+	if network {
+		c.TLS.validate(add)
+		if _, err := CheckID(c.TLS.ServerID, c.TLS.TrustDomain); err != nil {
+			add("tls.server_id: %q %v", c.TLS.ServerID, err)
+		}
 	}
 	return errors.Join(errs...)
 }

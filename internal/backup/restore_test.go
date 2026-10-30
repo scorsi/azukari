@@ -3,11 +3,13 @@ package backup
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -19,6 +21,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	backupv1 "github.com/scorsi/azukari/gen/azukari/backup/v1"
+	"github.com/scorsi/azukari/internal/bucket"
+	"github.com/scorsi/azukari/internal/config"
 	"github.com/scorsi/azukari/internal/logging"
 	"github.com/scorsi/azukari/internal/seal"
 )
@@ -26,7 +30,7 @@ import (
 func (e *env) restore(name, target string, verify bool) error {
 	// The restored d1 is read-only: let t.TempDir's cleanup remove it.
 	defer os.Chmod(filepath.Join(target, e.tree, "d1"), 0o755)
-	return Restore(context.Background(), e.cfg, name, target, verify, logging.New(e.logs, slog.LevelInfo))
+	return Restore(context.Background(), e.cfg, "", name, target, verify, logging.New(e.logs, slog.LevelInfo))
 }
 
 // sameTree compares src with its copy under target: types, content, modes, mtimes, symlink
@@ -84,7 +88,7 @@ func TestRestore(t *testing.T) {
 	first := e.run(t)
 
 	target := filepath.Join(t.TempDir(), "r")
-	if err := Restore(context.Background(), e.cfg, first, target, false, logging.New(e.logs, slog.LevelInfo)); err != nil {
+	if err := Restore(context.Background(), e.cfg, "", first, target, false, logging.New(e.logs, slog.LevelInfo)); err != nil {
 		t.Fatalf("restore: %v\n%s", err, e.logs.b.String())
 	}
 	sameTree(t, e.tree, target)
@@ -130,7 +134,7 @@ func TestRestore(t *testing.T) {
 	}
 	// An existing empty directory is a valid target, as an absent one.
 	empty := t.TempDir()
-	if err := Restore(context.Background(), e.cfg, second, empty, false, logging.New(e.logs, slog.LevelInfo)); err != nil {
+	if err := Restore(context.Background(), e.cfg, "", second, empty, false, logging.New(e.logs, slog.LevelInfo)); err != nil {
 		t.Fatalf("restore into an existing empty target: %v", err)
 	}
 	sameTree(t, e.tree, empty)
@@ -138,7 +142,7 @@ func TestRestore(t *testing.T) {
 
 	// Both listed, first field the name.
 	var out bytes.Buffer
-	if err := Snapshots(context.Background(), e.cfg, &out, logging.New(e.logs, slog.LevelInfo)); err != nil {
+	if err := Snapshots(context.Background(), e.cfg, "", &out, logging.New(e.logs, slog.LevelInfo)); err != nil {
 		t.Fatal(err)
 	}
 	var names []string
@@ -288,5 +292,119 @@ func TestRestoreSync(t *testing.T) {
 	}
 	if e.logs.count(`"restore-completed"`) != 2 {
 		t.Error("a restore with a failed fsync completed")
+	}
+}
+
+// A copy of the bucket made by cp -a from the real store's directory: restore and snapshots
+// read it with no server and no [tls], and refuse a corrupted, missing, oversized or
+// symlinked object; rsync's temporary files and tmp/ are ignored.
+func TestRestoreFromDir(t *testing.T) {
+	e := start(t)
+	e.makeTree(t)
+	name := e.run(t)
+	copyDir := filepath.Join(t.TempDir(), "copy")
+	if out, err := exec.Command("cp", "-a", e.bucket, copyDir).CombinedOutput(); err != nil {
+		t.Fatalf("cp: %v %s", err, out)
+	}
+	// Another node's namespace, with another key's config: not ours.
+	other, _ := seal.ParseKey([]byte(keyB))
+	body := other.Config()
+	write(t, filepath.Join(copyDir, "objects/node-b/config"), append(bucket.Header{Size: uint64(len(body)), SHA256: sha256.Sum256(body)}.Encode(), body...))
+	// What an interrupted rsync leaves behind, and the store's own temporary files.
+	write(t, filepath.Join(copyDir, "objects/node-a/snapshots/."+name+".Xy12Ab"), []byte("partial"))
+	write(t, filepath.Join(copyDir, "objects/node-a/.node-a.Q1w2E3"), []byte("partial"))
+	write(t, filepath.Join(copyDir, "tmp/put-123"), []byte("partial"))
+
+	cfg := &config.Backup{Bucket: "backup", DataKeyFile: e.cfg.DataKeyFile, Paths: e.cfg.Paths}
+	log := logging.New(e.logs, slog.LevelInfo)
+	restore := func(target string, verify bool) error {
+		defer os.Chmod(filepath.Join(target, e.tree, "d1"), 0o755)
+		return Restore(context.Background(), cfg, copyDir, name, target, verify, log)
+	}
+	target := filepath.Join(t.TempDir(), "r")
+	if err := restore(target, false); err != nil {
+		t.Fatalf("restore: %v\n%s", err, e.logs.b.String())
+	}
+	sameTree(t, e.tree, target)
+	absent := filepath.Join(t.TempDir(), "v")
+	if err := restore(absent, true); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if _, err := os.Lstat(absent); !os.IsNotExist(err) {
+		t.Errorf("verify wrote %s: %v", absent, err)
+	}
+
+	// Same listing as the store's.
+	var fromStore, fromCopy bytes.Buffer
+	if err := Snapshots(context.Background(), e.cfg, "", &fromStore, log); err != nil {
+		t.Fatal(err)
+	}
+	if err := Snapshots(context.Background(), cfg, copyDir, &fromCopy, log); err != nil {
+		t.Fatal(err)
+	}
+	if fromCopy.String() != fromStore.String() || !strings.HasPrefix(fromCopy.String(), name+" ") {
+		t.Errorf("snapshots from the copy:\n%s\nfrom the store:\n%s", fromCopy.String(), fromStore.String())
+	}
+
+	_, entries := e.snapshot(t, name)
+	var id []byte
+	for _, en := range entries {
+		if strings.HasSuffix(string(en.Path), "/text.txt") {
+			id = en.Chunks[0]
+		}
+	}
+	k := "node-a/" + seal.ChunkPath([32]byte(id))
+	f := filepath.Join(copyDir, "objects", k)
+	orig, err := os.ReadFile(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flipped := slices.Clone(orig)
+	flipped[len(flipped)-1] ^= 1
+	for _, tc := range []struct {
+		what, want string
+		mutate     func() error
+	}{
+		{"a flipped byte", "SHA-256", func() error { return os.WriteFile(f, flipped, 0o600) }},
+		{"a missing chunk", "no such file", func() error { return os.Remove(f) }},
+		{"an oversized chunk", "over", func() error { return os.Truncate(f, bucket.HeaderSize+maxChunk+1) }},
+		{"a symlinked chunk", "symlink refused", func() error {
+			kept := filepath.Join(t.TempDir(), "chunk")
+			if err := os.WriteFile(kept, orig, 0o600); err != nil {
+				return err
+			}
+			os.Remove(f)
+			return os.Symlink(kept, f)
+		}},
+	} {
+		if err := tc.mutate(); err != nil {
+			t.Fatal(err)
+		}
+		failed := e.logs.count(`"restore-failed"`)
+		err := restore(filepath.Join(t.TempDir(), "r"), true)
+		if err == nil || !strings.Contains(err.Error(), k) || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want one naming %s and %q", tc.what, err, k, tc.want)
+		}
+		if e.logs.count(`"restore-failed"`) != failed+1 {
+			t.Errorf("%s: no restore-failed", tc.what)
+		}
+		os.Remove(f)
+		if err := os.WriteFile(f, orig, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A wrong key finds no namespace; a copy whose node directory is a symlink is refused.
+	wrong := *cfg
+	wrong.DataKeyFile = writeKey(t, strings.Repeat("ab", 32))
+	if err := Restore(context.Background(), &wrong, copyDir, name, filepath.Join(t.TempDir(), "r"), true, log); err == nil || !strings.Contains(err.Error(), "no namespace") {
+		t.Errorf("wrong key: %v", err)
+	}
+	if err := os.Rename(filepath.Join(copyDir, "objects/node-a"), filepath.Join(copyDir, "node-a")); err != nil {
+		t.Fatal(err)
+	}
+	os.Symlink("../node-a", filepath.Join(copyDir, "objects/node-a"))
+	if err := restore(filepath.Join(t.TempDir(), "r"), true); err == nil || !strings.Contains(err.Error(), "symlink refused") {
+		t.Errorf("symlinked namespace: %v", err)
 	}
 }
