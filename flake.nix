@@ -118,11 +118,7 @@
                 && sc.SupplementaryGroups == [ "azukari" ]
                 && sc.RuntimeDirectory == "azukari"
                 && sc.Restart == "on-failure"
-                &&
-                  sc.ReadWritePaths == [
-                    "-/srv/disk-1/azukari/backup"
-                    "-/srv/usb/azukari"
-                  ]
+                && sc.ReadWritePaths == [ "-/srv" ]
                 && sc.LogRateLimitIntervalSec == "30s"
                 && sc.LogRateLimitBurst == 30000
                 && sc.ProtectSystem == "strict"
@@ -138,6 +134,31 @@
                 "openssh"
               ];
               assert !(lib.elem "-.mount" rootBucket.after);
+              # Disks: the mount points' parent, made at start, so later (un)mounts reach the store.
+              # A bucket on `/`: its own path.
+              assert
+                rootBucket.serviceConfig.ReadWritePaths == [
+                  "-/srv"
+                  "-/var/lib/azukari/root"
+                ];
+              # A mount point right under `/` would make `/` writable: one more failed assertion than
+              # the sample host (whose others, e.g. no root fs, fail too; messages unforced).
+              assert
+                let
+                  failed = c: lib.length (lib.filter (a: !a.assertion) c.assertions);
+                  mnt = nixosFor linux {
+                    services.azukari-server.settings.replicas = [
+                      {
+                        name = "usb";
+                        kind = "dir";
+                        destination = "/mnt/azukari";
+                        mount_point = "/mnt";
+                        every = "1h";
+                      }
+                    ];
+                  };
+                in
+                failed mnt.config == failed evaluated + 1;
               assert
                 !(lib.any (u: lib.hasSuffix ".mount" u) (
                   unit.wants ++ unit.requires ++ unit.bindsTo ++ unit.requisite

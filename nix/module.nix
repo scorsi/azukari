@@ -25,6 +25,17 @@ let
     )
   );
 
+  # The writable area for disks (ADR 0004, 0008): the parent of each `mount_point`, never the
+  # mount point nor anything on the disk. systemd bind-mounts every ReadWritePaths entry into the
+  # unit's namespace at start; a bind of a directory on the disk pins that filesystem there, so the
+  # host's later unmount does not reach the store (it would keep writing to a detached disk, and a
+  # dir replica would never be skipped). The parent stays on the host's filesystem: the namespace
+  # receives mounts and unmounts below it (slave propagation) both ways, writable as on the host.
+  # Root-owned 0755 on the host, so the store still writes only where the disk's owner lets it.
+  # A mount point that is itself below another removable mount is not covered.
+  onDisk = lib.filter (x: x.mount_point != "/") (buckets ++ dirReplicas);
+  mountParents = lib.unique (map (x: dirOf x.mount_point) onDisk);
+
   # `azukari-server check` at build time: an invalid file never becomes a system. It reads no SVID,
   # mount nor bucket, so the build sandbox suffices.
   configFile =
@@ -41,6 +52,9 @@ let
   # store then lays out FORMAT, objects/ and tmp/ and logs `bucket-created`. Never fails the unit.
   makeBucketDirs = pkgs.writeShellScript "azukari-server-bucket-dirs" ''
     umask 022
+    ${lib.concatMapStrings (d: ''
+      ${pkgs.coreutils}/bin/mkdir -p ${lib.escapeShellArg d}
+    '') mountParents}
     ${lib.concatMapStrings (b: ''
       if ${pkgs.util-linux}/bin/mountpoint -q ${lib.escapeShellArg b.mount_point} && [ ! -e ${lib.escapeShellArg b.path} ]; then
         ${pkgs.coreutils}/bin/install -d -o azukari -g azukari -m 0700 ${lib.escapeShellArg b.path}
@@ -71,6 +85,12 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    # A mount point right under `/` would make all of `/` writable (mountParents).
+    assertions = map (x: {
+      assertion = dirOf x.mount_point != "/";
+      message = "services.azukari-server: mount_point ${x.mount_point} sits right under /; mount the disk one level deeper (e.g. /srv/disk).";
+    }) onDisk;
+
     environment.etc."azukari/azukari-server.toml".source = configFile;
 
     users.users.azukari = {
@@ -111,11 +131,13 @@ in
         Group = "azukari-admin";
         SupplementaryGroups = [ "azukari" ];
         RuntimeDirectory = "azukari";
-        # `-`: a bucket or replica whose disk is absent has no `path` nor `destination`, and must
-        # not fail the unit. The deployment makes each dir replica's destination, writable by
-        # the store.
+        # The parents of the disks' mount points (see mountParents, made by ExecStartPre); a bucket
+        # or dir replica on `/` gets its own `path` or `destination`. `-`: an absent one must not
+        # fail the unit. The deployment makes each dir replica's destination, writable by the store.
         ReadWritePaths = lib.unique (
-          map (b: "-${b.path}") buckets ++ map (r: "-${r.destination}") dirReplicas
+          map (d: "-${d}") mountParents
+          ++ map (b: "-${b.path}") (lib.filter (b: b.mount_point == "/") buckets)
+          ++ map (r: "-${r.destination}") (lib.filter (r: r.mount_point == "/") dirReplicas)
         );
         # One line per request: 1000 lines/s sustained before journald drops (ADR 0009).
         LogRateLimitIntervalSec = lib.mkDefault "30s";
