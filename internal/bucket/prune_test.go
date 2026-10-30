@@ -139,8 +139,11 @@ func TestPruneKeepsNewestOfStoppedNode(t *testing.T) {
 	t0 := testNow
 	backup(t, b, t0, "a", "s1", "c1")
 	backup(t, b, t0.Add(day), "a", "s2", "c2")
-	// The root without refs is not a complete snapshot: neither newest nor pruned.
+	// The root without refs is not a complete snapshot: neither newest nor pruned. Put refuses
+	// one since ADR 0025: a store written before it may still hold one.
+	must(t, putAt(t, b, t0.Add(2*day), "a/refs/s3", ""))
 	must(t, putAt(t, b, t0.Add(2*day), "a/snapshots/s3", "half"))
+	must(t, os.Remove(filepath.Join(b.path, "objects", "a", "refs", "s3")))
 	p := prune(t, b, t0.Add(100*day), false)
 	if p.Snapshots != 1 || p.Refs != 1 || p.Chunks != 1 {
 		t.Fatalf("Prune = %+v", p)
@@ -195,6 +198,34 @@ func TestPruneDuringBackup(t *testing.T) {
 	must(t, putAt(t, b, now.Add(2*time.Hour), "a/snapshots/s1", "root"))
 	prune(t, b, now.Add(keep+day), false)
 	assertObjects(t, b, "a/refs/s1", "a/snapshots/s1", nsChunk("a", "mid"), nsChunk("a", "new"), nsChunk("a", "old"))
+}
+
+// A root is accepted only with its refs (ADR 0025); a retry of a stored root still answers 200.
+func TestRootRequiresRefs(t *testing.T) {
+	b := newBucket(t)
+	if err := putAt(t, b, testNow, "a/snapshots/s1", "root"); !errors.Is(err, ErrRefsIncomplete) {
+		t.Fatalf("root without refs: %v", err)
+	}
+	assertClean(t, b)
+	backup(t, b, testNow, "a", "s1", "c1")
+	if created, err := put(b, "a/snapshots/s1", "root s1"); created || err != nil {
+		t.Fatalf("retry = %v, %v", created, err)
+	}
+}
+
+// The M3 review's run paused past grace after its refs: pruning removes the orphan refs and
+// their chunks, so the late root is refused rather than stored without its chunks.
+func TestRootAfterOrphanPruned(t *testing.T) {
+	b := newBucket(t)
+	must(t, putAt(t, b, testNow, nsChunk("a", "c1"), "c1"))
+	must(t, putAt(t, b, testNow, "a/refs/s1", refsBody("c1")))
+	if p := prune(t, b, testNow.Add(grace+time.Nanosecond), false); p.Refs != 1 || p.Chunks != 1 {
+		t.Fatalf("Prune = %+v", p)
+	}
+	if err := putAt(t, b, testNow.Add(grace+time.Hour), "a/snapshots/s1", "root"); !errors.Is(err, ErrRefsIncomplete) {
+		t.Fatalf("late root: %v", err)
+	}
+	assertObjects(t, b)
 }
 
 func TestPruneUnavailable(t *testing.T) {

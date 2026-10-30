@@ -396,6 +396,9 @@ func TestLastSnapshot(t *testing.T) {
 	if _, ok, err := b.LastSnapshot("n"); ok || err != nil {
 		t.Fatalf("empty: %v, %v", ok, err)
 	}
+	for _, k := range []string{"n/refs/s1", "n/refs/s2", "n/refs/s0", "m/refs/s9"} {
+		must(t, putAt(t, b, testNow.Add(48*time.Hour), k, "")) // a root needs its refs (ADR 0025)
+	}
 	for i, k := range []string{"n/snapshots/s1", "n/snapshots/s2", "n/snapshots/s0", "n/refs/s9", "m/snapshots/s9"} {
 		at := testNow.Add(time.Duration(i) * time.Hour)
 		if k == "n/snapshots/s0" {

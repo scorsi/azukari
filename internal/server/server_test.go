@@ -552,7 +552,7 @@ func TestMissingList(t *testing.T) {
 	for _, h2 := range []bool{false, true} {
 		e := start(t)
 		c := e.client(t, nodeA, h2)
-		for _, k := range []string{"node-a/chunks/b", "node-a/chunks/a", "node-a/snapshots/1"} {
+		for _, k := range []string{"node-a/chunks/b", "node-a/chunks/a", "node-a/x/1"} {
 			data := []byte(k)
 			if a := e.do(t, c, "PUT", "/v1/b/backup/o/"+k, bytes.NewReader(data), hexSum(data)); a.code != http.StatusCreated {
 				t.Fatalf("put %s: %d %q", k, a.code, a.reason)
@@ -581,7 +581,7 @@ func TestMissingList(t *testing.T) {
 		if a := e.post(t, c, "/v1/b/backup/list", &azukariv1.ListRequest{Prefix: "node-a/", StartAfter: lr.Next}, &lr); a.code != 200 {
 			t.Fatalf("list page 2: %d %q", a.code, a.reason)
 		}
-		if len(lr.Objects) != 1 || lr.Objects[0].Key != "node-a/snapshots/1" || lr.Next != "" {
+		if len(lr.Objects) != 1 || lr.Objects[0].Key != "node-a/x/1" || lr.Next != "" {
 			t.Fatalf("last page %v", &lr)
 		}
 	}

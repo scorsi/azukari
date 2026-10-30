@@ -42,6 +42,10 @@ const Format = 1
 // RefsRetries bounds the retries of a refs PUT answered refs-incomplete (ADR 0007).
 const RefsRetries = 3
 
+// RootAttempts bounds the root PUTs of a run, each refused refs-incomplete one followed by
+// writing the refs again (ADR 0025).
+const RootAttempts = 3
+
 // Bounds of a run. Variables so tests can shrink them.
 var (
 	// RequestTimeout bounds each request, its client retries included.
@@ -55,6 +59,9 @@ var (
 
 // beforeRefs runs between the last upload and the refs PUT (test hook: prune a chunk there).
 var beforeRefs = func() {}
+
+// beforeRoot runs before each root PUT (test hook: prune the refs there).
+var beforeRoot = func() {}
 
 // fileReader is what a regular file is chunked from (test hook: fail a read midway).
 var fileReader = func(f *os.File) io.Reader { return f }
@@ -170,17 +177,8 @@ func (r *run) run(ctx context.Context, cfg *config.Backup) (string, error) {
 		refs = append(refs, id[:]...)
 	}
 	beforeRefs()
-	for attempt := 0; ; attempt++ {
-		_, err := r.put(ctx, node+"/refs/"+name, refs)
-		if err == nil {
-			break
-		}
-		if !isReason(err, http.StatusConflict, "refs-incomplete") || attempt == RefsRetries {
-			return "", fmt.Errorf("refs: %w", err)
-		}
-		if err := r.recover(ctx, ids); err != nil {
-			return "", err
-		}
+	if err := r.putRefs(ctx, node+"/refs/"+name, refs, ids); err != nil {
+		return "", err
 	}
 
 	r.totals.Chunks = uint64(len(ids))
@@ -196,10 +194,40 @@ func (r *run) run(ctx context.Context, cfg *config.Backup) (string, error) {
 	if int64(len(sealed)) > maxRoot {
 		return "", fmt.Errorf("root: %d sealed bytes, over the %d a restore reads", len(sealed), maxRoot)
 	}
-	if _, err := r.put(ctx, node+"/snapshots/"+name, sealed); err != nil {
-		return "", fmt.Errorf("root: %w", err)
+	for attempt := 1; ; attempt++ {
+		beforeRoot()
+		_, err := r.put(ctx, node+"/snapshots/"+name, sealed)
+		if err == nil {
+			return name, nil
+		}
+		if !isReason(err, http.StatusConflict, "refs-incomplete") || attempt == RootAttempts {
+			return "", fmt.Errorf("root: %w", err)
+		}
+		// Pruned while the run paused (ADR 0025): chunks back, then the refs again.
+		if err := r.recover(ctx, ids); err != nil {
+			return "", err
+		}
+		if err := r.putRefs(ctx, node+"/refs/"+name, refs, ids); err != nil {
+			return "", err
+		}
 	}
-	return name, nil
+}
+
+// putRefs writes the refs list k, uploading again the chunks pruned meanwhile on each
+// refs-incomplete answer, at most RefsRetries times (ADR 0007).
+func (r *run) putRefs(ctx context.Context, k string, refs []byte, ids [][32]byte) error {
+	for attempt := 0; ; attempt++ {
+		_, err := r.put(ctx, k, refs)
+		if err == nil {
+			return nil
+		}
+		if !isReason(err, http.StatusConflict, "refs-incomplete") || attempt == RefsRetries {
+			return fmt.Errorf("refs: %w", err)
+		}
+		if err := r.recover(ctx, ids); err != nil {
+			return err
+		}
+	}
 }
 
 // visit saves one path of the walk under root. Any error but a skipError under root stops

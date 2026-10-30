@@ -201,7 +201,8 @@ func (e *errWriter) Write(p []byte) (int, error) {
 // path). created is true for a new object (201) and false when the key already holds the
 // same bytes (200); other bytes give ErrExists (409). A refused or cut body leaves nothing
 // under objects/, and an error reading body is returned as is. A <node>/refs/... key must
-// hold sorted, distinct chunk ids naming chunks present (ErrRefsInvalid, ErrRefsIncomplete).
+// hold sorted, distinct chunk ids naming chunks present (ErrRefsInvalid, ErrRefsIncomplete);
+// a <node>/snapshots/<name> key needs <node>/refs/<name> present (ErrRefsIncomplete).
 func (b *Bucket) Put(k string, size int64, sum [32]byte, body io.Reader) (created bool, err error) {
 	if err := b.check(); err != nil {
 		return false, err
@@ -252,6 +253,16 @@ func (b *Bucket) Put(k string, size int64, sum [32]byte, body io.Reader) (create
 		defer b.LockNamespace(ns)()
 		if err := b.checkRefs(ns, f.Name(), size); err != nil {
 			return false, err
+		}
+	} else if name, ok := strings.CutPrefix(k, ns+"/snapshots/"); ok {
+		// ADR 0025: under the lock pruning holds, so its refs (and their chunks) stay.
+		defer b.LockNamespace(ns)()
+		fi, err := os.Stat(b.objectPath(ns + "/refs/" + name))
+		if err != nil && !errors.Is(notFound(err), ErrNotFound) {
+			return false, err
+		}
+		if err != nil || !fi.Mode().IsRegular() {
+			return false, fmt.Errorf("%w: refs/%s absent", ErrRefsIncomplete, name)
 		}
 	}
 

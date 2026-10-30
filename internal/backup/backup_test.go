@@ -342,6 +342,52 @@ func TestRefsIncomplete(t *testing.T) {
 	e.snapshot(t, name) // the metadata stream opens again
 }
 
+// The refs and chunks pruned before the root (ADR 0025): the root is refused once, the run
+// uploads the chunks and the refs again, then the root.
+func TestRootRefsIncomplete(t *testing.T) {
+	e := start(t)
+	e.makeTree(t)
+	calls := 0
+	beforeRoot = func() {
+		if calls++; calls > 1 {
+			return
+		}
+		for _, d := range []string{"refs", "chunks"} {
+			if err := os.RemoveAll(filepath.Join(e.bucket, "objects", "node-a", d)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	t.Cleanup(func() { beforeRoot = func() {} })
+	name := e.run(t)
+	if calls != 2 || e.logs.count(`"reason":"refs-incomplete"`) != 1 {
+		t.Errorf("%d root PUTs, %d refs-incomplete; want 2 and 1", calls, e.logs.count(`"reason":"refs-incomplete"`))
+	}
+	refs := e.refsSet(t, name)
+	if m, err := e.c.Missing(context.Background(), refs); err != nil || len(m) != 0 {
+		t.Errorf("missing after the run: %v, %v", m, err)
+	}
+	e.snapshot(t, name)
+}
+
+// The refs pruned before every root PUT: the run fails after RootAttempts.
+func TestRootRefsIncompleteFails(t *testing.T) {
+	e := start(t)
+	e.makeTree(t)
+	calls := 0
+	beforeRoot = func() {
+		calls++
+		if err := os.RemoveAll(filepath.Join(e.bucket, "objects", "node-a", "refs")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { beforeRoot = func() {} })
+	e.runFails(t, "refs-incomplete")
+	if calls != RootAttempts || e.logs.count(`"reason":"refs-incomplete"`) != RootAttempts {
+		t.Errorf("%d root PUTs, %d refs-incomplete; want %d", calls, e.logs.count(`"reason":"refs-incomplete"`), RootAttempts)
+	}
+}
+
 func TestWrongKey(t *testing.T) {
 	e := start(t)
 	e.makeTree(t)

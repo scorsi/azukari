@@ -102,8 +102,9 @@ func TestAdminSocket(t *testing.T) {
 		t.Fatalf("socket %v, %v; want a socket, mode 0660", fi.Mode(), err)
 	}
 
-	store(t, e, "node-a/snapshots/s1", "root s1")
 	store(t, e, "node-a/refs/s1", "")
+	store(t, e, "node-a/snapshots/s1", "root s1")
+	store(t, e, "node-a/refs/s2", "")
 	time.Sleep(time.Millisecond) // distinct receive times
 	store(t, e, "node-a/snapshots/s2", "root s2")
 	var sr adminv1.SnapshotsResponse

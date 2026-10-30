@@ -122,6 +122,9 @@ func TestMetrics(t *testing.T) {
 
 	c := e.client(t, nodeA, true)
 	data := []byte("root")
+	if a := e.do(t, c, "PUT", "/v1/b/backup/o/node-a/refs/s", bytes.NewReader(nil), hexSum(nil)); a.code != http.StatusCreated {
+		t.Fatalf("refs: %d %q", a.code, a.reason) // a root needs its refs (ADR 0025)
+	}
 	before := time.Now().Unix()
 	if a := e.do(t, c, "PUT", "/v1/b/backup/o/node-a/snapshots/s", bytes.NewReader(data), hexSum(data)); a.code != http.StatusCreated {
 		t.Fatalf("snapshot: %d %q", a.code, a.reason)
@@ -150,7 +153,7 @@ func TestMetrics(t *testing.T) {
 
 	body = scrape(t, e.srv)
 	for series, want := range map[string]int64{
-		`azukari_requests_total{bucket="backup",call="put",code="2xx"}`: 1,
+		`azukari_requests_total{bucket="backup",call="put",code="2xx"}`: 2,
 		`azukari_requests_total{bucket="down",call="put",code="5xx"}`:   1,
 		`azukari_requests_total{bucket="",call="get",code="4xx"}`:       1, // the stranger never reaches a bucket
 		`azukari_received_bytes_total{bucket="backup"}`:                 4,

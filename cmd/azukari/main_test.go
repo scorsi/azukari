@@ -32,6 +32,9 @@ func TestCommand(t *testing.T) {
 	}
 	b := bucket.New(path, 1024, 0)
 	for _, k := range []string{"node-a/snapshots/s1", "node-a/snapshots/s2"} {
+		if _, err := b.Put(strings.Replace(k, "snapshots", "refs", 1), 0, sha256.Sum256(nil), strings.NewReader("")); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := b.Put(k, 4, sha256.Sum256([]byte("root")), strings.NewReader("root")); err != nil {
 			t.Fatal(err)
 		}
