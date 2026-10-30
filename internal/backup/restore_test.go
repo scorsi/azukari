@@ -10,11 +10,14 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/encoding/protodelim"
@@ -406,5 +409,94 @@ func TestRestoreFromDir(t *testing.T) {
 	os.Symlink("../node-a", filepath.Join(copyDir, "objects/node-a"))
 	if err := restore(filepath.Join(t.TempDir(), "r"), true); err == nil || !strings.Contains(err.Error(), "symlink refused") {
 		t.Errorf("symlinked namespace: %v", err)
+	}
+}
+
+// A copy is untrusted input: a symlink at FORMAT, objects/ or any level of a chunk's path, or
+// a FIFO in place of an object, is refused at once and nothing is written to the target. A
+// namespace starting with "." restores like any other (ADR 0015).
+func TestRestoreFromDirBoundaries(t *testing.T) {
+	e := start(t)
+	e.makeTree(t)
+	name := e.run(t)
+	root, _ := e.snapshot(t, name)
+	meta := seal.ChunkPath([32]byte(root.MetadataChunks[0])) // read before any entry is written
+	fanout := path.Dir(meta)
+	cfg := &config.Backup{Bucket: "backup", DataKeyFile: e.cfg.DataKeyFile, Paths: e.cfg.Paths}
+	log := logging.New(e.logs, slog.LevelInfo)
+	fresh := func(t *testing.T) string {
+		dir := filepath.Join(t.TempDir(), "copy")
+		if out, err := exec.Command("cp", "-a", e.bucket, dir).CombinedOutput(); err != nil {
+			t.Fatalf("cp: %v %s", err, out)
+		}
+		return dir
+	}
+	// relink moves rel aside and puts a symlink to it in its place: following it would work.
+	relink := func(rel string) func(string) error {
+		return func(dir string) error {
+			p := filepath.Join(dir, rel)
+			if err := os.Rename(p, p+".real"); err != nil {
+				return err
+			}
+			return os.Symlink(filepath.Base(p)+".real", p)
+		}
+	}
+
+	t.Run("dot namespace", func(t *testing.T) {
+		dir := fresh(t)
+		if err := os.Rename(filepath.Join(dir, "objects/node-a"), filepath.Join(dir, "objects/.node-a")); err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(t.TempDir(), "r")
+		defer os.Chmod(filepath.Join(target, e.tree, "d1"), 0o755)
+		if err := Restore(context.Background(), cfg, dir, name, target, false, log); err != nil {
+			t.Fatalf("restore: %v", err)
+		}
+		sameTree(t, e.tree, target)
+		var out bytes.Buffer
+		if err := Snapshots(context.Background(), cfg, dir, &out, log); err != nil || !strings.HasPrefix(out.String(), name+" ") {
+			t.Errorf("snapshots: %v %q", err, out.String())
+		}
+	})
+
+	// O_DIRECTORY|O_NOFOLLOW on a symlink may give ELOOP or ENOTDIR (both seen on Linux).
+	dirLink := "symlink refused|not a directory"
+	for _, tc := range []struct {
+		what, want string
+		mutate     func(dir string) error
+	}{
+		{"FORMAT", "symlink refused", relink("FORMAT")},
+		{"objects/", dirLink, relink("objects")},
+		{"chunks/", dirLink, relink("objects/node-a/chunks")},
+		{"chunk fan-out", dirLink, relink("objects/node-a/" + fanout)},
+		{"chunk", "symlink refused", relink("objects/node-a/" + meta)},
+		{"FIFO chunk", "not a regular file", func(dir string) error {
+			p := filepath.Join(dir, "objects/node-a", meta)
+			if err := os.Remove(p); err != nil {
+				return err
+			}
+			return syscall.Mkfifo(p, 0o600)
+		}},
+	} {
+		t.Run(tc.what, func(t *testing.T) {
+			dir := fresh(t)
+			if err := tc.mutate(dir); err != nil {
+				t.Fatal(err)
+			}
+			target := t.TempDir()
+			done := make(chan error, 1)
+			go func() { done <- Restore(context.Background(), cfg, dir, name, target, false, log) }()
+			select {
+			case err := <-done:
+				if err == nil || !regexp.MustCompile(tc.want).MatchString(err.Error()) {
+					t.Errorf("err = %v, want %q", err, tc.want)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("restore hangs")
+			}
+			if names, err := os.ReadDir(target); err != nil || len(names) != 0 {
+				t.Errorf("target holds %v (%v)", names, err)
+			}
+		})
 	}
 }

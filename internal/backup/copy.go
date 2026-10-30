@@ -24,8 +24,9 @@ import (
 // copyDir reads a node's objects from a copy of a bucket's directory, a replica for instance
 // (ADR 0006, 0008): FORMAT, then objects/<key> as the store lays them out (ADR 0004). A copy
 // is untrusted input: every object is checked against its header's size and SHA-256 and
-// bounded like a GET, a symlink anywhere below the copy is refused, names starting with "."
-// (rsync's temporary files) are ignored, and tmp/ is never read.
+// bounded like a GET, a symlink anywhere below the copy is refused, names starting with "." in
+// an object listing (rsync's temporary files) are ignored, and tmp/ is never read. A namespace
+// may start with "." (ADR 0015): namespace directories are all kept.
 type copyDir struct {
 	objects int // descriptor of <copy>/objects
 }
@@ -138,7 +139,7 @@ func (d *copyDir) Get(_ context.Context, k string, max int64) ([]byte, error) {
 	return body, nil
 }
 
-// entries lists rel's names in byte order, refusing symlinks and skipping "." names.
+// entries lists rel's names in byte order, refusing symlinks.
 func (d *copyDir) entries(rel string) ([]fs.DirEntry, error) {
 	f, err := d.open(rel, true)
 	if err != nil {
@@ -151,13 +152,10 @@ func (d *copyDir) entries(rel string) ([]fs.DirEntry, error) {
 	}
 	var out []fs.DirEntry
 	for _, e := range all {
-		switch {
-		case strings.HasPrefix(e.Name(), "."):
-		case e.Type()&fs.ModeSymlink != 0:
+		if e.Type()&fs.ModeSymlink != 0 {
 			return nil, fmt.Errorf("objects/%s: symlink refused", path.Join(rel, e.Name()))
-		default:
-			out = append(out, e)
 		}
+		out = append(out, e)
 	}
 	slices.SortFunc(out, func(a, b fs.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
 	return out, nil
@@ -177,6 +175,9 @@ func (d *copyDir) List(_ context.Context, prefix string) iter.Seq2[*azukariv1.Ob
 			return
 		}
 		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), ".") { // rsync's .<name>.XXXXXX; never a snapshot name
+				continue
+			}
 			if !e.Type().IsRegular() {
 				yield(nil, fmt.Errorf("%s%s: not a regular file", prefix, e.Name()))
 				return
