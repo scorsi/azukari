@@ -402,6 +402,10 @@
               inherit self pkgs;
               inherit (inputs) nisshi masu;
             };
+            restore-from-dir = import ./nix/tests/restore-from-dir.nix {
+              inherit self pkgs;
+              inherit (inputs) nisshi masu;
+            };
           };
 
           devShells.default = pkgs.mkShellNoCC {
