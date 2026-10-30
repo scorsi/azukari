@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -239,4 +240,97 @@ func TestSnapshotsAndDelete(t *testing.T) {
 		t.Fatalf("Prune = %+v", p)
 	}
 	assertObjects(t, b, "a/config", "a/refs/s3", "a/snapshots/s3", nsChunk("a", "c3"))
+}
+
+// A prune waiting for a namespace's lock while another call fails the bucket (a deletion whose
+// fsync failed) deletes nothing once it gets the lock (ADR 0007).
+func TestPruneUnavailableWhileWaiting(t *testing.T) {
+	b := newBucket(t)
+	must(t, putAt(t, b, testNow, nsChunk("a", "x"), "x")) // a: one orphan chunk, deleted last
+	backup(t, b, testNow, "b", "s1", "c1")
+	backup(t, b, testNow.Add(day), "b", "s2", "c2")
+	want := slices.DeleteFunc(objects(t, b), func(o string) bool { return o == nsChunk("a", "x") })
+
+	unlock := b.LockNamespace("b")
+	syncDir, aDone := b.syncDir, make(chan struct{})
+	var once sync.Once
+	b.syncDir = func(d string) error { once.Do(func() { close(aDone) }); return syncDir(d) }
+	res := make(chan error)
+	go func() { _, err := b.Prune(testNow.Add(keep+2*day), keep, grace, false); res <- err }()
+	<-aDone // past Prune's first check, on its way to b's lock
+	b.fail(errInjected)
+	unlock()
+	if err := <-res; !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Prune = %v", err)
+	}
+	assertObjects(t, b, want...)
+}
+
+// One flipped byte in a retained refs body aborts the run before any chunk goes; reading a
+// corrupt object leaves the bucket available. An unsorted list too.
+func TestPruneCorruptRefs(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		edit func([]byte)
+		want error
+	}{
+		{"flipped", func(f []byte) { f[HeaderSize+5] ^= 1 }, ErrSHA256Mismatch},
+		{"unsorted", func(f []byte) {
+			body := f[HeaderSize:]
+			var x [32]byte
+			copy(x[:], body[:32])
+			copy(body[:32], body[32:64])
+			copy(body[32:64], x[:])
+			h, _ := DecodeHeader(f[:HeaderSize], int64(len(f)))
+			h.SHA256 = sha256.Sum256(body)
+			copy(f, h.Encode())
+		}, ErrRefsInvalid},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, now := setupHistory(t)
+			p := b.objectPath("a/refs/s4") // c3 and c4: retained
+			f, err := os.ReadFile(p)
+			must(t, err)
+			tc.edit(f)
+			must(t, os.WriteFile(p, f, 0o600))
+			if _, err := b.Prune(now, keep, grace, false); !errors.Is(err, tc.want) {
+				t.Fatalf("Prune = %v, want %v", err, tc.want)
+			}
+			if err := b.Err(); err != nil {
+				t.Fatalf("bucket failed: %v", err)
+			}
+			for _, c := range []string{"c1", "c2", "c3", "c4"} {
+				if _, err := os.Stat(b.objectPath(nsChunk("a", c))); err != nil {
+					t.Errorf("chunk %s: %v", c, err)
+				}
+			}
+		})
+	}
+}
+
+// A listing waits for a deletion holding the namespace's lock and never shows half of it.
+func TestSnapshotsDuringDelete(t *testing.T) {
+	b, _ := setupHistory(t)
+	unlock := b.LockNamespace("a") // a deletion of s4 in progress
+	res := make(chan []Snapshot)
+	go func() {
+		list, err := b.Snapshots("a")
+		if err != nil {
+			t.Error(err)
+		}
+		res <- list
+	}()
+	time.Sleep(50 * time.Millisecond)
+	must(t, os.Remove(b.objectPath("a/snapshots/s4")))
+	must(t, os.Remove(b.objectPath("a/refs/s4")))
+	select {
+	case <-res:
+		t.Fatal("listed while the namespace was locked")
+	default:
+	}
+	unlock()
+	list := <-res
+	if len(list) != 3 || list[2].Name != "s3" || list[2].Bytes != int64(len("root s3")+32) {
+		t.Fatalf("Snapshots = %+v", list)
+	}
 }

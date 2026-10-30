@@ -2,6 +2,7 @@ package bucket
 
 import (
 	"bufio"
+	"bytes"
 	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
@@ -70,6 +71,10 @@ func (b *Bucket) Prune(now time.Time, keep, grace time.Duration, dryRun bool) (P
 
 func (b *Bucket) pruneNamespace(ns string, now time.Time, keep, grace time.Duration, dry bool, p *Pruned) error {
 	defer b.LockNamespace(ns)()
+	// Another call may have failed the bucket while this one waited for the lock.
+	if err := b.check(); err != nil {
+		return err
+	}
 	base := filepath.Join(b.path, "objects", ns)
 	rootDir, refsDir, chunkDir := filepath.Join(base, "snapshots"), filepath.Join(base, "refs"), filepath.Join(base, "chunks")
 	roots, err := scan(rootDir, nil)
@@ -160,7 +165,9 @@ func scan(dir string, skip func(rel string) bool) (map[string]stored, error) {
 	return objs, err
 }
 
-// readRefs adds the chunk paths a refs list names (sorted 32-byte ids, ADR 0007) to set.
+// readRefs adds the chunk paths a refs list names (sorted 32-byte ids, ADR 0007) to set. A body
+// that does not match its header's SHA-256 or is not sorted, distinct ids is an error: the run
+// must not delete chunks on the word of a corrupt list.
 func readRefs(p string, set map[string]bool) error {
 	f, err := os.Open(p)
 	if err != nil {
@@ -171,14 +178,25 @@ func readRefs(p string, set map[string]bool) error {
 	if err != nil {
 		return err
 	}
-	r := bufio.NewReader(io.LimitReader(f, int64(h.Size)))
-	var id [sha256.Size]byte
-	for {
+	if h.Size%sha256.Size != 0 {
+		return fmt.Errorf("%w: %s: %d bytes is not a multiple of 32", ErrRefsInvalid, p, h.Size)
+	}
+	sum := sha256.New()
+	r := bufio.NewReader(io.TeeReader(io.LimitReader(f, int64(h.Size)), sum))
+	var prev, id [sha256.Size]byte
+	for i := 0; ; i++ {
 		if _, err := io.ReadFull(r, id[:]); errors.Is(err, io.EOF) {
+			if !bytes.Equal(sum.Sum(nil), h.SHA256[:]) {
+				return fmt.Errorf("%w: %s", ErrSHA256Mismatch, p)
+			}
 			return nil
 		} else if err != nil {
 			return fmt.Errorf("%s: %w", p, err)
 		}
+		if i > 0 && bytes.Compare(prev[:], id[:]) >= 0 {
+			return fmt.Errorf("%w: %s: id %d is not above the previous one", ErrRefsInvalid, p, i)
+		}
+		prev = id
 		x := hex.EncodeToString(id[:])
 		set[x[:2]+"/"+x] = true
 	}
@@ -208,7 +226,11 @@ func (b *Bucket) remove(dir string, rels []string, objs map[string]stored, dry b
 }
 
 // removeFile unlinks p if it is a regular file; any other failure makes the bucket unavailable.
+// Nothing is deleted once the bucket is unavailable, whoever failed it.
 func (b *Bucket) removeFile(p string) error {
+	if err := b.check(); err != nil {
+		return err
+	}
 	fi, err := os.Lstat(p)
 	if err != nil && errors.Is(notFound(err), ErrNotFound) || err == nil && !fi.Mode().IsRegular() {
 		return nil
@@ -236,6 +258,9 @@ func (b *Bucket) DeleteSnapshot(namespace, name string) error {
 		return err
 	}
 	defer b.LockNamespace(namespace)()
+	if err := b.check(); err != nil { // failed while this call waited for the lock
+		return err
+	}
 	root := b.objectPath(namespace + "/snapshots/" + name)
 	if _, err := readHeader(root); err != nil {
 		return err
@@ -259,6 +284,8 @@ func (b *Bucket) Snapshots(namespace string) ([]Snapshot, error) {
 	if err := checkNamespace(namespace); err != nil {
 		return nil, err
 	}
+	// Under the lock: no prune or deletion between the two scans.
+	defer b.LockNamespace(namespace)()
 	base := filepath.Join(b.path, "objects", namespace)
 	roots, err := scan(filepath.Join(base, "snapshots"), nil)
 	if err != nil {

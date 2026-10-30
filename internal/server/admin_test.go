@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -18,6 +19,7 @@ import (
 
 	adminv1 "github.com/scorsi/azukari/gen/azukari/admin/v1"
 	azukariv1 "github.com/scorsi/azukari/gen/azukari/v1"
+	"github.com/scorsi/azukari/internal/bucket"
 )
 
 // startAdmin serves e's store on a fresh administration socket and returns its path. Short
@@ -228,5 +230,47 @@ func TestAdminRetentionWaits(t *testing.T) {
 	}
 	if !strings.Contains(e.logs.String(), `"dry_run":false`) {
 		t.Fatalf("no real prune-completed:\n%s", e.logs)
+	}
+}
+
+// A listing larger than the socket buffers reaches a caller that starts reading only after
+// the network write deadline: no response deadline on the socket (ADR 0024).
+func TestAdminSlowReader(t *testing.T) {
+	e := start(t)
+	sock := startAdmin(t, e)
+	old := BodyTimeout
+	BodyTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { BodyTimeout = old })
+	dir := filepath.Join(e.cfg.Buckets[0].Path, "objects", "node-a", "snapshots")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const n = 8000 // about 2 MiB of names
+	hdr := bucket.Header{SHA256: sha256.Sum256(nil), ReceiveTime: time.Now().UnixNano()}.Encode()
+	for i := range n {
+		name := fmt.Sprintf("%06d-%s", i, strings.Repeat("x", 232))
+		if err := os.WriteFile(filepath.Join(dir, name), hdr, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	req, _ := proto.Marshal(&adminv1.SnapshotsRequest{Namespace: "node-a"})
+	c, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	fmt.Fprintf(c, "POST /v1/admin/b/backup/snapshots HTTP/1.1\r\nHost: azukari\r\nContent-Length: %d\r\n\r\n%s", len(req), req)
+	time.Sleep(4 * BodyTimeout)
+	r, err := http.ReadResponse(bufio.NewReader(c), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := io.ReadAll(r.Body)
+	if err != nil {
+		t.Fatalf("body cut after %d bytes: %v", len(out), err)
+	}
+	var sr adminv1.SnapshotsResponse
+	if err := proto.Unmarshal(out, &sr); err != nil || r.StatusCode != 200 || len(sr.Snapshots) != n {
+		t.Fatalf("snapshots = %d, %d entries, %v", r.StatusCode, len(sr.Snapshots), err)
 	}
 }

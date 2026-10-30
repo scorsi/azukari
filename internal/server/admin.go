@@ -80,7 +80,7 @@ func peerUID(c net.Conn) int {
 // admin answers one call and logs it as admin-call (ADR 0009): uid, call, arguments, and the
 // outcome.
 func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
-	o := &outcome{}
+	o := &outcome{admin: true}
 	var args []any
 	s.serveAdmin(w, r, o, &args)
 	attrs := append([]any{"event", "admin-call", "uid", r.Context().Value(uidKey{}), "call", o.call}, args...)
@@ -198,7 +198,7 @@ func reply(w http.ResponseWriter, r *http.Request, o *outcome, m proto.Message) 
 	h.Set("Content-Type", "application/x-protobuf")
 	h.Set("Content-Length", strconv.Itoa(len(out)))
 	o.code = http.StatusOK
-	writeHeader(w, o.code)
+	writeHeader(w, o)
 	n, _ := w.Write(out)
 	o.bytes = int64(n)
 }

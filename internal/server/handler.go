@@ -25,6 +25,7 @@ type outcome struct {
 	reason                  string
 	bytes                   int64
 	err                     error
+	admin                   bool // an administration call: no response deadline (ADR 0024)
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -61,16 +62,19 @@ func refuse(w http.ResponseWriter, r *http.Request, o *outcome, code int, reason
 		// first. HTTP/2 resets the stream instead (Connection: close there would end every stream).
 		h.Set("Connection", "close")
 	}
-	writeHeader(w, code)
+	writeHeader(w, o)
 	w.Write(body)
 }
 
-// writeHeader starts a response under BodyTimeout's write deadline, so no response, control
-// or refusal included, waits forever on a client that stops reading (ADR 0003).
-func writeHeader(w http.ResponseWriter, code int) {
-	// net/http's writers support deadlines on HTTP/1 and HTTP/2; nothing to refuse past this point anyway.
-	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(BodyTimeout))
-	w.WriteHeader(code)
+// writeHeader starts a response with status o.code under BodyTimeout's write deadline, so no
+// network response, control or refusal included, waits forever on a client that stops reading
+// (ADR 0003). Administration responses have no deadline (ADR 0024).
+func writeHeader(w http.ResponseWriter, o *outcome) {
+	if !o.admin {
+		// net/http's writers support deadlines on HTTP/1 and HTTP/2; nothing to refuse past this point anyway.
+		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(BodyTimeout))
+	}
+	w.WriteHeader(o.code)
 }
 
 func (s *Server) serve(w http.ResponseWriter, r *http.Request, o *outcome) {
@@ -172,7 +176,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, o *outcome) {
 		s.refuseErr(w, r, o, name, err)
 	case created:
 		o.code = http.StatusCreated
-		writeHeader(w, o.code)
+		writeHeader(w, o)
 		ns := key.Namespace(k)
 		if snap, ok := strings.CutPrefix(k, ns+"/snapshots/"); ok && !strings.Contains(snap, "/") {
 			s.log.Info("", "event", "snapshot-received", "bucket", name, "namespace", ns, "snapshot", snap)
@@ -182,7 +186,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, o *outcome) {
 		}
 	default:
 		o.code = http.StatusOK
-		writeHeader(w, o.code)
+		writeHeader(w, o)
 	}
 }
 
@@ -309,7 +313,7 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request, o *outcome, b *buck
 	hd.Set("Content-Length", strconv.FormatUint(h.Size, 10))
 	hd.Set("Azukari-Sha256", hex.EncodeToString(h.SHA256[:]))
 	o.code = http.StatusOK
-	writeHeader(w, o.code)
+	writeHeader(w, o)
 	// A failure here (client gone, deadline) can no longer change the status: bytes tells it.
 	o.bytes, _ = io.CopyN(w, body, int64(h.Size))
 }
