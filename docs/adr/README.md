@@ -35,3 +35,4 @@ Decision / Consequences. A decision is changed by a new ADR that supersedes the 
 | [0028](0028-one-operator-command.md) | One operator command |
 | [0029](0029-offline-namespace.md) | The namespace of a restore from a copy |
 | [0030](0030-snapshot-per-export.md) | One snapshot per export |
+| [0031](0031-freshness-per-export.md) | Freshness per export |
