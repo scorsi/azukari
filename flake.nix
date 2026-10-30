@@ -360,6 +360,10 @@
               inherit self pkgs;
               inherit (inputs) nisshi masu;
             };
+            retention = import ./nix/tests/retention.nix {
+              inherit self pkgs;
+              inherit (inputs) nisshi masu;
+            };
           };
 
           devShells.default = pkgs.mkShellNoCC {
