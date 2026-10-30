@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -30,23 +31,8 @@ matches the data key.
 `
 
 func main() {
-	args := os.Args[1:]
-	var verify bool
-	var fromDir string
-	for len(args) > 1 && (args[0] == "restore" || args[0] == "snapshots") {
-		if args[1] == "--verify" && args[0] == "restore" && !verify {
-			verify, args = true, append(args[:1], args[2:]...)
-		} else if args[1] == "--from-dir" && len(args) > 2 && fromDir == "" && args[2] != "" {
-			fromDir, args = args[2], append(args[:1], args[3:]...)
-		} else {
-			break
-		}
-	}
-	if len(args) > 1 && strings.HasPrefix(args[1], "--") {
-		args = nil // an unknown, repeated or incomplete option
-	}
-	want := map[string]int{"check": 2, "run": 2, "snapshots": 2, "restore": 4}
-	if len(args) == 0 || want[args[0]] == 0 || len(args) != want[args[0]] {
+	call, verify, fromDir, args, err := parseArgs(os.Args[1:])
+	if err != nil {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
@@ -56,23 +42,49 @@ func main() {
 	if fromDir != "" {
 		load = config.LoadBackupOffline
 	}
-	cfg, err := load(args[1])
+	cfg, err := load(args[0])
 	failed := map[string]string{"check": "config-invalid", "run": "backup-failed",
-		"snapshots": "snapshots-failed", "restore": "restore-failed"}[args[0]]
+		"snapshots": "snapshots-failed", "restore": "restore-failed"}[call]
 	if err != nil {
 		log.Error("", "event", failed, "err", err)
 		os.Exit(1)
 	}
 	ctx := context.Background()
-	switch args[0] {
+	switch call {
 	case "run":
 		_, err = backup.Run(ctx, cfg, log)
 	case "snapshots":
 		err = backup.Snapshots(ctx, cfg, fromDir, os.Stdout, log)
 	case "restore":
-		err = backup.Restore(ctx, cfg, fromDir, args[2], args[3], verify, log)
+		err = backup.Restore(ctx, cfg, fromDir, args[1], args[2], verify, log)
 	}
 	if err != nil {
 		os.Exit(1)
 	}
+}
+
+// parseArgs splits the command line into the call, its options and the remaining operands
+// (rest). It reslices args and never writes to it: append on args[:1] would overwrite the
+// option values while they are still being read.
+func parseArgs(args []string) (call string, verify bool, fromDir string, rest []string, err error) {
+	errUsage := errors.New("usage")
+	if len(args) == 0 {
+		return "", false, "", nil, errUsage
+	}
+	call, rest = args[0], args[1:]
+	for len(rest) > 0 && (call == "restore" || call == "snapshots") {
+		if rest[0] == "--verify" && call == "restore" && !verify {
+			verify, rest = true, rest[1:]
+		} else if rest[0] == "--from-dir" && len(rest) > 1 && fromDir == "" && rest[1] != "" {
+			fromDir, rest = rest[1], rest[2:]
+		} else {
+			break
+		}
+	}
+	want := map[string]int{"check": 1, "run": 1, "snapshots": 1, "restore": 3}[call]
+	// A leading "--" is an unknown, repeated or incomplete option.
+	if want == 0 || len(rest) != want || strings.HasPrefix(rest[0], "--") {
+		return "", false, "", nil, errUsage
+	}
+	return call, verify, fromDir, rest, nil
 }
