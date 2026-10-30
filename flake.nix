@@ -373,6 +373,10 @@
               inherit self pkgs;
               inherit (inputs) nisshi masu;
             };
+            replication = import ./nix/tests/replication.nix {
+              inherit self pkgs;
+              inherit (inputs) nisshi masu;
+            };
           };
 
           devShells.default = pkgs.mkShellNoCC {
