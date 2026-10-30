@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -493,5 +494,59 @@ func TestRefsWaitsForLock(t *testing.T) {
 	unlock()
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A chunk linked by one Put but whose directory chain is not yet fsynced is not durable:
+// another export's missing, refs and root must not count it until that Put's sync is done
+// (ADR 0004, 0025), while uploads of other chunks go on.
+func TestUncommittedChunkIsMissing(t *testing.T) {
+	b := newBucket(t)
+	a, other := [32]byte{1}, [32]byte{2}
+	fanout := filepath.Dir(b.objectPath(chunkKey(a)))
+	reached, release := make(chan struct{}), make(chan struct{})
+	var blocked atomic.Bool
+	b.syncDir = func(dir string) error {
+		if dir == fanout && blocked.CompareAndSwap(false, true) {
+			close(reached)
+			<-release
+		}
+		return syncDir(dir)
+	}
+	done := make(chan error)
+	go func() { _, err := put(b, chunkKey(a), "a"); done <- err }()
+	<-reached // A's chunk is linked, its directory not yet fsynced
+
+	if _, err := os.Stat(b.objectPath(chunkKey(a))); err != nil {
+		t.Fatalf("chunk not linked yet: %v", err)
+	}
+	if m, err := b.Missing([]string{chunkKey(a)}); err != nil || len(m) != 1 {
+		t.Fatalf("Missing = %v, %v; want the uncommitted chunk", m, err)
+	}
+	if _, err := put(b, "n/refs/d/s", string(a[:])); !errors.Is(err, ErrRefsIncomplete) {
+		t.Fatalf("refs over an uncommitted chunk: %v", err)
+	}
+	if _, err := put(b, "n/snapshots/d/s", "root"); !errors.Is(err, ErrRefsIncomplete) {
+		t.Fatalf("root: %v", err)
+	}
+	if created, err := put(b, chunkKey(other), "other"); !created || err != nil { // not serialized behind A
+		t.Fatalf("other chunk: %v, %v", created, err)
+	}
+
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if m, err := b.Missing([]string{chunkKey(a)}); err != nil || len(m) != 0 {
+		t.Fatalf("Missing after commit = %v, %v", m, err)
+	}
+	if created, err := put(b, "n/refs/d/s", string(a[:])); !created || err != nil {
+		t.Fatalf("refs after commit: %v, %v", created, err)
+	}
+	if created, err := put(b, "n/snapshots/d/s", "root"); !created || err != nil {
+		t.Fatalf("root after commit: %v, %v", created, err)
+	}
+	if len(b.committing) != 0 {
+		t.Fatalf("committing left %v", b.committing)
 	}
 }

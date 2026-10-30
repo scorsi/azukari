@@ -571,3 +571,26 @@ func TestVanishedSymlink(t *testing.T) {
 	}
 	sameTree(t, e.tree, target)
 }
+
+// The config check assumes a 1-byte namespace: the run checks its real keys (ADR 0003) and,
+// over 256 bytes, refuses before uploading anything, even the node's config.
+func TestExportKeyLength(t *testing.T) {
+	e := start(t)
+	e.makeTree(t)
+	fits := config.MaxExportLen + len("n") - len("node-a") // node-a/snapshots/<export>/<name> is 256 bytes
+	for _, n := range []int{fits + 1, fits} {
+		exp := strings.Repeat("e", n)
+		e.cfg.Exports = map[string]config.Export{exp: {Paths: []string{e.tree}}}
+		_, err := Run(context.Background(), e.cfg, exp, logging.New(e.logs, slog.LevelInfo))
+		if n > fits {
+			if err == nil || !strings.Contains(err.Error(), "length 257") {
+				t.Fatalf("%d bytes: err = %v, want length 257", n, err)
+			}
+			if keys := e.list(t); len(keys) != 0 {
+				t.Fatalf("refused run uploaded %v", keys)
+			}
+		} else if err != nil {
+			t.Fatalf("%d bytes: %v", n, err)
+		}
+	}
+}

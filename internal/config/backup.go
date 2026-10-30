@@ -8,6 +8,8 @@ import (
 	"os"
 	"slices"
 	"strconv"
+
+	"github.com/scorsi/azukari/internal/key"
 )
 
 // Backup is azukari-backup's file (ADR 0011); unknown keys are an error. The node's namespace
@@ -22,6 +24,11 @@ type Backup struct {
 	Exports map[string]Export `toml:"exports"`
 	TLS     BackupTLS         `toml:"tls"`
 }
+
+// MaxExportLen keeps <namespace>/snapshots/<export>/<name>, the longest key a run writes, within
+// ADR 0003's 256 bytes for a 1-byte namespace; the run checks the real keys once it knows its
+// namespace. <name> is the run's fixed-length snapshot name, 20060102T150405Z-<8 hex> (ADR 0006).
+const MaxExportLen = key.MaxLen - len("n/snapshots//") - len("20060102T150405Z-01234567")
 
 // Export is one [exports.<name>] table (ADR 0030).
 type Export struct {
@@ -91,6 +98,8 @@ func (c *Backup) validate(network bool) error {
 	for _, name := range slices.Sorted(maps.Keys(c.Exports)) {
 		if !validSegment(name, keySegmentRE) {
 			add("exports: %q must be a key segment: [A-Za-z0-9._-], not '.' or '..'", name)
+		} else if len(name) > MaxExportLen {
+			add("exports: %q is %d bytes, at most %d", name, len(name), MaxExportLen)
 		}
 		paths := c.Exports[name].Paths
 		if len(paths) == 0 {

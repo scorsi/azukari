@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -58,6 +59,27 @@ func TestBackupOffline(t *testing.T) {
 		}
 		if _, err := LoadBackup(p); err == nil {
 			t.Errorf("%q accepted by LoadBackup", tc.body)
+		}
+	}
+}
+
+// An export name leaves room for the run's longest key with a 1-byte namespace (ADR 0003).
+func TestBackupExportNameLength(t *testing.T) {
+	if MaxExportLen != 218 {
+		t.Fatalf("MaxExportLen = %d, want 256 - len(\"n/snapshots//\") - 25", MaxExportLen)
+	}
+	for _, n := range []int{MaxExportLen, MaxExportLen + 1} {
+		body := "bucket = \"backup\"\ndata_key_file = \"/k\"\n[exports." + strings.Repeat("e", n) + "]\npaths = [\"/a\"]\n"
+		c := &Backup{}
+		if err := decode([]byte(body), c); err != nil {
+			t.Fatal(err)
+		}
+		err := c.validate(false)
+		if ok := n <= MaxExportLen; (err == nil) != ok {
+			t.Errorf("%d bytes: %v", n, err)
+		}
+		if err != nil && !strings.Contains(err.Error(), "at most 218") {
+			t.Errorf("%d bytes: %v", n, err)
 		}
 	}
 }

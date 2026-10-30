@@ -137,6 +137,17 @@ func (r *run) run(ctx context.Context, cfg *config.Backup, export string) (strin
 	defer r.c.Close()
 	r.cdc = fastcdc.New(nil, r.key.GearTable())
 
+	var rnd [4]byte
+	rand.Read(rnd[:])
+	name := r.began.UTC().Format("20060102T150405Z") + "-" + hex.EncodeToString(rnd[:]) // ADR 0006, 0015
+	// The config check bounds the export name for a 1-byte namespace only (ADR 0003): refuse
+	// keys over the limit before uploading anything.
+	for _, k := range []string{node + "/snapshots/" + export + "/" + name, node + "/refs/" + export + "/" + name} {
+		if err := key.Check(k); err != nil {
+			return "", fmt.Errorf("export %q: %w", export, err)
+		}
+	}
+
 	// A different key check there means another data key: refuse before any upload.
 	if _, err := r.put(ctx, node+"/config", r.key.Config()); err != nil {
 		if isReason(err, http.StatusConflict, "object-exists") {
@@ -144,10 +155,6 @@ func (r *run) run(ctx context.Context, cfg *config.Backup, export string) (strin
 		}
 		return "", fmt.Errorf("config: %w", err)
 	}
-
-	var rnd [4]byte
-	rand.Read(rnd[:])
-	name := r.began.UTC().Format("20060102T150405Z") + "-" + hex.EncodeToString(rnd[:]) // ADR 0006, 0015
 
 	if r.meta, err = os.CreateTemp("", "azukari-backup-*"); err != nil {
 		return "", err

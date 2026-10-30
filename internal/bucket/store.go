@@ -53,6 +53,13 @@ type Bucket struct {
 	now       func() time.Time
 	failed    atomic.Pointer[error]
 	locks     sync.Map // namespace -> *sync.Mutex
+	// committing counts, by key, the Puts between their link and the end of their syncChain:
+	// such a key is visible but maybe not durable, so Missing and checkRefs treat it as absent
+	// (a client then uploads it again, and that Put's own syncChain makes it durable). Without
+	// this, a snapshot could reference a chunk a concurrent upload had linked but a crash then
+	// lost (ADR 0004, 0025). Distinct keys never wait on each other.
+	committingMu sync.Mutex
+	committing   map[string]int
 	// The write path's syscalls, replaced by the fault-injection tests.
 	write    func(f *os.File, p []byte) (int, error)
 	syncFile func(f *os.File) error
@@ -162,6 +169,32 @@ func (b *Bucket) fail(err error) error {
 // failCommit fails the bucket after an fsync error on an object already visible.
 func (b *Bucket) failCommit(err error) error {
 	return fmt.Errorf("%w: %w", ErrStopped, b.fail(err))
+}
+
+// commit marks k as linked but not yet durable until the returned func runs.
+func (b *Bucket) commit(k string) (done func()) {
+	b.committingMu.Lock()
+	defer b.committingMu.Unlock()
+	if b.committing == nil {
+		b.committing = map[string]int{}
+	}
+	b.committing[k]++
+	return func() {
+		b.committingMu.Lock()
+		defer b.committingMu.Unlock()
+		if b.committing[k]--; b.committing[k] == 0 {
+			delete(b.committing, k)
+		}
+	}
+}
+
+// present reports whether k, found as a regular file by a stat made BEFORE this call, is
+// durable. Order matters: a Put marks its key before linking it, so a key seen linked is
+// either still marked or was unmarked after its directory chain was fsynced.
+func (b *Bucket) present(k string) bool {
+	b.committingMu.Lock()
+	defer b.committingMu.Unlock()
+	return b.committing[k] == 0
 }
 
 // syncChain fsyncs every directory from dir up to objects/. Another Put may have created one
@@ -275,6 +308,7 @@ func (b *Bucket) Put(k string, size int64, sum [32]byte, body io.Reader) (create
 	} else if err != nil {
 		return false, b.fail(err)
 	}
+	defer b.commit(k)() // before the link: see present
 	switch err := b.link(f.Name(), dst); {
 	case err == nil:
 		if err := b.syncChain(parent); err != nil {
@@ -331,11 +365,12 @@ func (b *Bucket) checkRefs(ns, tmp string, size int64) error {
 			continue
 		}
 		h := hex.EncodeToString(id[:])
-		fi, err := os.Stat(b.objectPath(ns + "/chunks/" + h[:2] + "/" + h))
+		ck := ns + "/chunks/" + h[:2] + "/" + h
+		fi, err := os.Stat(b.objectPath(ck))
 		if err != nil && !errors.Is(notFound(err), ErrNotFound) {
 			return err
 		}
-		if err != nil || !fi.Mode().IsRegular() {
+		if err != nil || !fi.Mode().IsRegular() || !b.present(ck) {
 			incomplete = fmt.Errorf("%w: chunk %s absent", ErrRefsIncomplete, h)
 		}
 	}
@@ -398,7 +433,7 @@ func (b *Bucket) Get(k string) (Header, io.ReadCloser, error) {
 	return h, f, nil
 }
 
-// Missing returns, in order, the keys that hold no object (ADR 0003's missing).
+// Missing returns, in order, the keys that hold no durable object (ADR 0003's missing).
 func (b *Bucket) Missing(keys []string) ([]string, error) {
 	if err := b.check(); err != nil {
 		return nil, err
@@ -412,7 +447,7 @@ func (b *Bucket) Missing(keys []string) ([]string, error) {
 		if err != nil && !errors.Is(notFound(err), ErrNotFound) {
 			return nil, err
 		}
-		if err != nil || !fi.Mode().IsRegular() {
+		if err != nil || !fi.Mode().IsRegular() || !b.present(k) {
 			missing = append(missing, k)
 		}
 	}
