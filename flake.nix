@@ -183,27 +183,21 @@
                 } > $out
               '';
 
-            # The backup unit and its timer, forced at eval time as `module-eval`.
+            # The backup units and timers, one per export (ADR 0030), forced at eval time as `module-eval`.
             backup-module-eval =
               let
-                unit = backup.systemd.services.azukari-backup;
+                units = backup.systemd.services;
+                unit = units.azukari-backup-db;
                 sc = unit.serviceConfig;
-                timer = backup.systemd.timers.azukari-backup;
+                # The module's timers only: NixOS defines others.
+                timers = lib.filterAttrs (n: _: lib.hasPrefix "azukari" n) backup.systemd.timers;
                 # Failed assertions, messages unforced (the sample host fails others, e.g. no root fs).
                 failed = c: lib.length (lib.filter (a: !a.assertion) c.assertions);
                 # A data key in the store fails the evaluation.
                 storeKey = backupFor linux {
                   services.azukari-backup.settings.data_key_file = lib.mkForce "${builtins.storeDir}/x-data.key";
                 };
-                # One export (ADR 0021).
-                withExport = backupFor linux {
-                  services.azukari-backup.exports.db = {
-                    user = "db";
-                    command = "db-dump > \"$EXPORT_DIR/db.sql\"";
-                  };
-                };
-                ex = withExport.systemd.services.azukari-export-db;
-                exUnit = withExport.systemd.services.azukari-backup;
+                ex = units.azukari-export-db;
                 badName = backupFor linux { services.azukari-backup.exports."..".user = "db"; };
                 # 15 + 18 characters: one over Linux's 32 for the group name (ADR 0022).
                 longName = backupFor linux {
@@ -213,20 +207,20 @@
                 writableFor =
                   paths:
                   backupFor linux {
-                    services.azukari-backup.exports.db = {
-                      user = "db";
+                    services.azukari-backup.exports.app = {
+                      user = "app";
                       command = "true";
                       writablePaths = paths;
                     };
                   };
                 parent = writableFor [
-                  "/var/lib/db"
+                  "/var/lib/app"
                   "/persist"
                 ];
                 # A sibling sharing the directory's prefix is not a parent.
                 noParent = writableFor [
-                  "/var/lib/db"
-                  "/persist/backups/db2"
+                  "/var/lib/app"
+                  "/persist/backups/app2"
                 ];
                 rootExport = backupFor linux {
                   services.azukari-backup.exports.${lib.fixedWidthString 17 "a" ""} = {
@@ -234,9 +228,16 @@
                     command = "true";
                   };
                 };
+                # No export, or a table of the file no export runs: refused (ADR 0030).
+                noExport = backupFor linux {
+                  services.azukari-backup.exports = lib.mkForce { };
+                  services.azukari-backup.settings.exports = lib.mkForce { };
+                };
+                orphan = backupFor linux { services.azukari-backup.settings.exports.extra.paths = [ "/srv/x" ]; };
               in
               assert
-                lib.hasSuffix "/bin/azukari-backup run /etc/azukari/azukari-backup.toml" sc.ExecStart
+                lib.hasSuffix "/bin/azukari-backup run /etc/azukari/azukari-backup.toml db" sc.ExecStart
+                && lib.hasSuffix "/bin/azukari-backup run /etc/azukari/azukari-backup.toml www" units.azukari-backup-www.serviceConfig.ExecStart
                 && !(sc ? ExecStartPre)
                 && sc.Type == "oneshot"
                 && sc.User == "azukari-backup"
@@ -252,14 +253,27 @@
                 && sc.SystemCallFilter == [ "@system-service" ]
                 && !(sc ? PrivateUsers)
                 && !(sc ? ReadWritePaths)
-                && !(sc ? DynamicUser);
-              # Started by the timer only.
+                && !(sc ? DynamicUser)
+                &&
+                  units.azukari-backup-www.serviceConfig
+                  == sc // { inherit (units.azukari-backup-www.serviceConfig) ExecStart; };
+              # Started by its timer only.
               assert unit.wantedBy == [ ] && unit.restartTriggers == [ ];
+              # One timer per export, its own `every`; no node-wide unit nor timer (ADR 0030).
               assert
-                timer.wantedBy == [ "timers.target" ]
-                && timer.timerConfig.OnCalendar == "daily"
-                && timer.timerConfig.Persistent
-                && timer.timerConfig.RandomizedDelaySec == "1h";
+                lib.attrNames timers == [
+                  "azukari-backup-db"
+                  "azukari-backup-www"
+                ]
+                && !(units ? azukari-backup)
+                && timers.azukari-backup-db.timerConfig.OnCalendar == "*-*-* 00/6:00"
+                && timers.azukari-backup-www.timerConfig.OnCalendar == "daily"
+                && lib.all (
+                  t:
+                  t.wantedBy == [ "timers.target" ]
+                  && t.timerConfig.Persistent
+                  && t.timerConfig.RandomizedDelaySec == "1h"
+                ) (lib.attrValues timers);
               assert failed storeKey == failed backup + 1;
               assert
                 backup.users.users.azukari-backup.isSystemUser
@@ -269,7 +283,7 @@
               assert lib.elem self.packages.${linux}.azukari backup.environment.systemPackages;
               # No root step: the option is gone (ADR 0020).
               assert !(backup.services.azukari-backup ? preCommand);
-              # Exports: unit as the service's user, its directory, ordering and paths (ADR 0021).
+              # Exports: unit as the service's user, its directory, ordering and paths (ADR 0021, 0030).
               assert
                 ex.serviceConfig.Type == "oneshot"
                 && ex.serviceConfig.User == "db"
@@ -280,18 +294,19 @@
                 && ex.serviceConfig.ReadWritePaths == [ "/persist/backups/db" ]
                 && lib.hasInfix "db-dump" ex.script
                 && ex.wantedBy == [ ];
+              # Each run requires its own export only.
               assert
-                lib.elem "azukari-export-db.service" exUnit.requires
-                && lib.elem "azukari-export-db.service" exUnit.after
-                && backup.systemd.services.azukari-backup.requires == [ ];
-              assert lib.all (l: lib.elem l withExport.systemd.tmpfiles.rules) [
+                unit.requires == [ "azukari-export-db.service" ]
+                && lib.elem "azukari-export-db.service" unit.after
+                && units.azukari-backup-www.requires == [ "azukari-export-www.service" ];
+              assert lib.all (l: lib.elem l backup.systemd.tmpfiles.rules) [
                 "d /persist/backups 0711 root root -"
                 "d /persist/backups/db 2750 db azukari-export-db -"
                 "z /persist/backups/db 2750 db azukari-export-db -"
               ];
               # One group per export, shared by its user and the backup only (ADR 0022).
               assert
-                lib.sort lib.lessThan withExport.users.groups.azukari-export-db.members == [
+                lib.sort lib.lessThan backup.users.groups.azukari-export-db.members == [
                   "azukari-backup"
                   "db"
                 ]
@@ -299,21 +314,24 @@
                   rootExport.users.groups.${"azukari-export-" + lib.fixedWidthString 17 "a" ""}.members == [
                     "azukari-backup"
                   ]
-                && !(withExport.systemd.services.azukari-backup.serviceConfig ? SupplementaryGroups);
+                && !(sc ? SupplementaryGroups);
+              # `[exports.<name>] paths` of the file: the directory, plus the deployment's paths.
               assert
-                lib.sort lib.lessThan withExport.services.azukari-backup.settings.paths == [
-                  "/persist/backups/db"
-                  "/var/backup"
-                  "/var/lib/a"
-                ];
+                backup.services.azukari-backup.settings.exports.db.paths == [ "/persist/backups/db" ]
+                &&
+                  lib.sort lib.lessThan backup.services.azukari-backup.settings.exports.www.paths == [
+                    "/persist/backups/www"
+                    "/var/lib/www"
+                  ]
+                && !(backup.services.azukari-backup.settings ? paths);
               assert failed badName == failed backup + 1;
               assert failed longName == failed backup + 1 && failed rootExport == failed backup;
+              assert failed noExport == failed backup + 1 && failed orphan == failed backup + 1;
               assert
-                parent.systemd.services.azukari-export-db.serviceConfig.ReadWritePaths == [
-                  "/var/lib/db"
+                parent.systemd.services.azukari-export-app.serviceConfig.ReadWritePaths == [
+                  "/var/lib/app"
                   "/persist"
                 ]
-                && failed withExport == failed backup
                 && failed parent == failed backup
                 && failed noParent == failed backup + 1;
               pkgs.runCommand "azukari-backup-module-eval" { } ''

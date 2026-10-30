@@ -82,7 +82,7 @@ let
       };
     };
     # The test starts each run itself.
-    systemd.timers.azukari-backup.wantedBy = lib.mkForce [ ];
+    systemd.timers.azukari-backup-data.wantedBy = lib.mkForce [ ];
   };
 in
 pkgs.testers.runNixOSTest {
@@ -115,6 +115,7 @@ pkgs.testers.runNixOSTest {
         user = "alice";
         command = ''echo hello-from-alice > "$EXPORT_DIR/hello"'';
       };
+      systemd.timers.azukari-backup-alice.wantedBy = lib.mkForce [ ];
     };
     # Fresh: the same key, SVID and file, nothing else of node-a (no tree, no users).
     restorer = nodeA;

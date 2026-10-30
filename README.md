@@ -15,6 +15,21 @@
 - `azukari`: the operator command line (administration through the store's local socket);
   `azukari backup snapshots|restore` runs the node's `azukari-backup` installed next to it.
 
+## Backups on a node
+
+The NixOS module `azukari-backup` gives each export `<name>` (ADR 0021, 0030) the units
+`azukari-export-<name>.service` (writes the export) and `azukari-backup-<name>.service` (reruns the
+export, then backs it up as its own snapshots), started by `azukari-backup-<name>.timer` on
+`exports.<name>.every` (default daily). To back up one export now, then list and restore it:
+
+```
+systemctl start azukari-backup-<name>
+azukari backup snapshots /etc/azukari/azukari-backup.toml <name>
+azukari backup restore [--verify] /etc/azukari/azukari-backup.toml <name> <snapshot> <empty target>
+```
+
+A node's full restore is one restore per export.
+
 ## Restore without the store
 
 When the store is gone, a node restores from a copy of the bucket's directory (a replica,
