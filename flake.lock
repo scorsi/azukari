@@ -179,11 +179,11 @@
         "rev": "0577322fcde6a3c1abe2c33f2f65c6ce82c0454c",
         "revCount": 42,
         "type": "git",
-        "url": "ssh://git@forgejo.uchi.scorsi.dev:2222/scorsi/nisshi.git"
+        "url": "https://kajiba.uchi.scorsi.dev/scorsi/nisshi.git"
       },
       "original": {
         "type": "git",
-        "url": "ssh://git@forgejo.uchi.scorsi.dev:2222/scorsi/nisshi.git"
+        "url": "https://kajiba.uchi.scorsi.dev/scorsi/nisshi.git"
       }
     },
     "masu": {
@@ -202,11 +202,11 @@
         "rev": "2860f1950c16f140fa71a8386ff49ffa70f032b9",
         "revCount": 41,
         "type": "git",
-        "url": "ssh://git@forgejo.uchi.scorsi.dev:2222/scorsi/masu.git"
+        "url": "https://kajiba.uchi.scorsi.dev/scorsi/masu.git"
       },
       "original": {
         "type": "git",
-        "url": "ssh://git@forgejo.uchi.scorsi.dev:2222/scorsi/masu.git"
+        "url": "https://kajiba.uchi.scorsi.dev/scorsi/masu.git"
       }
     }
   },
